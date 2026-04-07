@@ -1,0 +1,55 @@
+{
+  "datasets": [
+    {
+      "dataset_id": "hydrogel_characterization_data",
+      "title": "Hydrogel Characterization Data",
+      "source": "manual_local_upload",
+      "landing_page": null,
+      "archive_path": "/Users/houjian/Library/CloudStorage/OneDrive-个人/autogen-ecm-organoid-assistant/datasets/hydrogel_characterization_data/raw/Hydrogel Characterization Data.zip",
+      "dataset_dir": "/Users/houjian/Library/CloudStorage/OneDrive-个人/autogen-ecm-organoid-assistant/datasets/hydrogel_characterization_data",
+      "extracted_dir": "/Users/houjian/Library/CloudStorage/OneDrive-个人/autogen-ecm-organoid-assistant/datasets/hydrogel_characterization_data/extracted",
+      "download_meta": {
+        "mode": "manual_local_upload"
+      },
+      "file_count": 17,
+      "files": [
+        "/Users/houjian/Library/CloudStorage/OneDrive-个人/autogen-ecm-organoid-assistant/datasets/hydrogel_characterization_data/extracted/Hydrogel Characterization Data/GelMA_Characterization_Data.xlsx",
+        "/Users/houjian/Library/CloudStorage/OneDrive-个人/autogen-ecm-organoid-assistant/datasets/hydrogel_characterization_data/extracted/Hydrogel Characterization Data/GelMA_CompressionFiles/10p120sCompression.xlsx",
+        "/Users/houjian/Library/CloudStorage/OneDrive-个人/autogen-ecm-organoid-assistant/datasets/hydrogel_characterization_data/extracted/Hydrogel Characterization Data/GelMA_CompressionFiles/10p30sCompression.xlsx",
+        "/Users/houjian/Library/CloudStorage/OneDrive-个人/autogen-ecm-organoid-assistant/datasets/hydrogel_characterization_data/extracted/Hydrogel Characterization Data/GelMA_CompressionFiles/10p60sCompression.xlsx",
+        "/Users/houjian/Library/CloudStorage/OneDrive-个人/autogen-ecm-organoid-assistant/datasets/hydrogel_characterization_data/extracted/Hydrogel Characterization Data/GelMA_CompressionFiles/10p90sCompression.xlsx",
+        "/Users/houjian/Library/CloudStorage/OneDrive-个人/autogen-ecm-organoid-assistant/datasets/hydrogel_characterization_data/extracted/Hydrogel Characterization Data/GelMA_CompressionFiles/15p120sCompression.xlsx",
+        "/Users/houjian/Library/CloudStorage/OneDrive-个人/autogen-ecm-organoid-assistant/datasets/hydrogel_characterization_data/extracted/Hydrogel Characterization Data/GelMA_CompressionFiles/15p30sCompression.xlsx",
+        "/Users/houjian/Library/CloudStorage/OneDrive-个人/autogen-ecm-organoid-assistant/datasets/hydrogel_characterization_data/extracted/Hydrogel Characterization Data/GelMA_CompressionFiles/15p60s_Compression.xlsx",
+        "/Users/houjian/Library/CloudStorage/OneDrive-个人/autogen-ecm-organoid-assistant/datasets/hydrogel_characterization_data/extracted/Hydrogel Characterization Data/GelMA_CompressionFiles/15p90sCompression.xlsx",
+        "/Users/houjian/Library/CloudStorage/OneDrive-个人/autogen-ecm-organoid-assistant/datasets/hydrogel_characterization_data/extracted/Hydrogel Characterization Data/GelMA_CompressionFiles/20p120sCompression.xlsx",
+        "/Users/houjian/Library/CloudStorage/OneDrive-个人/autogen-ecm-organoid-assistant/datasets/hydrogel_characterization_data/extracted/Hydrogel Characterization Data/GelMA_CompressionFiles/20p30sCompression.xlsx",
+        "/Users/houjian/Library/CloudStorage/OneDrive-个人/autogen-ecm-organoid-assistant/datasets/hydrogel_characterization_data/extracted/Hydrogel Characterization Data/GelMA_CompressionFiles/20p60sCompression.xlsx",
+        "/Users/houjian/Library/CloudStorage/OneDrive-个人/autogen-ecm-organoid-assistant/datasets/hydrogel_characterization_data/extracted/Hydrogel Characterization Data/GelMA_CompressionFiles/20p90sCompression.xlsx",
+        "/Users/houjian/Library/CloudStorage/OneDrive-个人/autogen-ecm-organoid-assistant/datasets/hydrogel_characterization_data/extracted/Hydrogel Characterization Data/PEGDA_Characterization_Data.xlsx",
+        "/Users/houjian/Library/CloudStorage/OneDrive-个人/autogen-ecm-organoid-assistant/datasets/hydrogel_characterization_data/extracted/Hydrogel Characterization Data/PEGDA_CompressionFiles/10pPEGDA_10pGelMA_60s_Compression.xlsx",
+        "/Users/houjian/Library/CloudStorage/OneDrive-个人/autogen-ecm-organoid-assistant/datasets/hydrogel_characterization_data/extracted/Hydrogel Characterization Data/PEGDA_CompressionFiles/10pPEGDA_5pGelMA_60s_Compression.xlsx",
+        "/Users/houjian/Library/CloudStorage/OneDrive-个人/autogen-ecm-organoid-assistant/datasets/hydrogel_characterization_data/extracted/Hydrogel Characterization Data/PEGDA_CompressionFiles/10pPEGDA_60s_Compression.xlsx"
+      ],
+      "downloaded_at": "2026-04-01T07:09:07.573780+00:00",
+      "status": "manual_local_ingested"
+    },
+    {
+      "dataset_id": "mendeley_hydrogel_rheology_swelling",
+      "title": "Hydrogel Rheology, Optical Values, and Swelling",
+      "source": "Mendeley Data",
+      "landing_page": "https://data.mendeley.com/datasets/c3rxvdgbrs/1",
+      "archive_path": null,
+      "dataset_dir": "/Users/houjian/Library/CloudStorage/OneDrive-个人/autogen-ecm-organoid-assistant/datasets/mendeley_hydrogel_rheology_swelling",
+      "extracted_dir": "/Users/houjian/Library/CloudStorage/OneDrive-个人/autogen-ecm-organoid-assistant/datasets/mendeley_hydrogel_rheology_swelling/extracted",
+      "download_meta": {
+        "mode": "manual"
+      },
+      "file_count": 0,
+      "files": [],
+      "downloaded_at": "2026-04-01T07:09:07.574641+00:00",
+      "status": "manual_download_required",
+      "manual_download_instructions": "Open the landing page in a browser, download the source files manually, and place them into /Users/houjian/Library/CloudStorage/OneDrive-个人/autogen-ecm-organoid-assistant/datasets/mendeley_hydrogel_rheology_swelling/raw. Then run the dataset normalization step."
+    }
+  ]
+}

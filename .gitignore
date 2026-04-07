@@ -1,0 +1,35 @@
+# Secrets and local-only environment
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Python environments and build metadata
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+pip-wheel-metadata/
+
+# OS / local shell noise
+.DS_Store
+.Rhistory
+
+# Generated runtime outputs
+.cache/
+logs/
+reports/
+runs/
+*.log
+
+# Build outputs and downloaded binaries
+build/
+dist/
+bin/
+cloudflared-*.tgz
