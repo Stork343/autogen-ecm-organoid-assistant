@@ -56,9 +56,13 @@ def sample_mechanics_dataset_path(project_dir: Path) -> Path:
     workspace_candidate = project_dir / "demo_assets" / "sample_mechanics_creep.csv"
     if workspace_candidate.exists():
         return workspace_candidate
-    source_candidate = source_project_dir() / "runs" / "sample_mechanics_creep.csv"
-    if source_candidate.exists():
-        return source_candidate
+    source_root = source_project_dir()
+    for source_candidate in (
+        source_root / "demo_assets" / "sample_mechanics_creep.csv",
+        source_root / "runs" / "sample_mechanics_creep.csv",
+    ):
+        if source_candidate.exists():
+            return source_candidate
     raise FileNotFoundError("Missing sample mechanics dataset for demo workflow.")
 
 
@@ -69,7 +73,7 @@ def prepare_demo_assets(project_dir: Path) -> dict[str, Path]:
 
     source_root = source_project_dir()
 
-    sample_src = source_root / "runs" / "sample_mechanics_creep.csv"
+    sample_src = sample_mechanics_dataset_path(source_root)
     sample_dst = assets_dir / "sample_mechanics_creep.csv"
     if sample_src.exists() and not sample_dst.exists():
         shutil.copy2(sample_src, sample_dst)
