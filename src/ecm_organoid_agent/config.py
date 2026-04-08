@@ -5,6 +5,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional
 
+from .febio.config import FEBioConfig
+
 
 def _load_dotenv(project_dir: Path) -> None:
     try:
@@ -40,11 +42,17 @@ class AppConfig:
     frontend_password_sha256: Optional[str]
     frontend_public_host: str
     frontend_public_port: int
+    febio_enabled: bool = True
+    febio_executable: Optional[str] = None
+    febio_timeout_seconds: int = 300
+    febio_default_tmp_dir: Optional[Path] = None
+    febio_status_message: str = "FEBio status not initialized."
 
     @classmethod
     def from_project_dir(cls, project_dir: Path) -> "AppConfig":
         project_dir = project_dir.resolve()
         _load_dotenv(project_dir)
+        febio = FEBioConfig.from_env(project_dir)
         model_provider = os.getenv(
             "MODEL_PROVIDER",
             "deepseek" if os.getenv("DEEPSEEK_API_KEY") else "openai",
@@ -91,6 +99,11 @@ class AppConfig:
             frontend_password_sha256=os.getenv("FRONTEND_PASSWORD_SHA256"),
             frontend_public_host=os.getenv("FRONTEND_PUBLIC_HOST", "0.0.0.0").strip(),
             frontend_public_port=int(os.getenv("FRONTEND_PUBLIC_PORT", "8525")),
+            febio_enabled=febio.enabled,
+            febio_executable=febio.executable,
+            febio_timeout_seconds=febio.timeout_seconds,
+            febio_default_tmp_dir=febio.default_tmp_dir,
+            febio_status_message=febio.status_message,
         )
 
     def with_overrides(

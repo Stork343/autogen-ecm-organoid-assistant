@@ -14,6 +14,7 @@ from .benchmarks import run_mechanics_benchmark_suite
 from .calibration import calibrated_search_space_from_calibration_results, load_latest_calibration_results, predict_material_observables, run_calibration_pipeline
 from .config import AppConfig
 from .datasets import acquire_public_dataset, auto_register_loose_archives, list_public_dataset_specs, normalize_dataset_directory
+from .febio import CandidateSimulationMappingOptions, candidate_requests_summary, compare_simulation_candidates_payloads, design_payload_to_simulation_requests
 from .formulation import recommend_campaign_formulations, recommend_formulations_from_design_payload
 from .model_client import build_model_client
 from .tools import build_tools, sanitize_filename
@@ -1697,6 +1698,14 @@ async def run_design_agent(
     design_top_k: int,
     design_candidate_budget: int,
     design_monte_carlo_runs: int,
+    design_run_simulation: bool = False,
+    design_simulation_scenario: str = "bulk_mechanics",
+    design_simulation_top_k: int = 0,
+    cell_contractility: Optional[float] = None,
+    organoid_radius: Optional[float] = None,
+    matrix_youngs_modulus: Optional[float] = None,
+    matrix_poisson_ratio: Optional[float] = None,
+    simulation_request_json: str = "",
     condition_concentration_fraction: Optional[float] = None,
     condition_curing_seconds: Optional[float] = None,
     condition_overrides: dict[str, Any] | None = None,
@@ -1815,7 +1824,35 @@ async def run_design_agent(
     if run_artifacts is not None:
         write_stage_text(run_artifacts.run_dir, "design_sensitivity", sensitivity_output)
 
-    _emit_progress(progress_callback, "design_writer", "[3/4] Writing ECM design report...")
+    design_simulation_payload = _design_simulation_not_run_payload(
+        enabled=design_run_simulation,
+        scenario=design_simulation_scenario,
+        reason=(
+            config.febio_status_message
+            if design_run_simulation and not config.febio_executable
+            else "Design workflow simulation verification was not requested."
+        ),
+    )
+    design_simulation_output = _build_design_simulation_ledger(design_simulation_payload)
+    if design_run_simulation:
+        _emit_progress(progress_callback, "design_febio", "[3/5] Running FEBio verification for top ECM candidates...")
+        design_simulation_payload = _run_design_candidate_simulations(
+            config=config,
+            design_payload=design_payload,
+            target_stiffness=target_stiffness,
+            scenario=design_simulation_scenario,
+            simulation_request_json=simulation_request_json,
+            cell_contractility=cell_contractility,
+            organoid_radius=organoid_radius,
+            matrix_youngs_modulus=matrix_youngs_modulus,
+            matrix_poisson_ratio=matrix_poisson_ratio,
+            top_k=max(1, int(design_simulation_top_k or design_top_k)),
+        )
+        design_simulation_output = _build_design_simulation_ledger(design_simulation_payload)
+    if run_artifacts is not None:
+        write_stage_text(run_artifacts.run_dir, "design_simulation", design_simulation_output)
+
+    _emit_progress(progress_callback, "design_writer", "[4/5] Writing ECM design report...")
     report_content = _build_design_report_markdown(
         query=query,
         targets=targets,
@@ -1827,6 +1864,7 @@ async def run_design_agent(
         calibrated_search_space=calibrated_search_space,
         calibration_context=calibration_context,
         sensitivity_output=sensitivity_output,
+        design_simulation=design_simulation_payload,
     )
     saved_path = tools["save_report"](report_name, report_content)
     final_summary = _build_design_final_summary(
@@ -1835,6 +1873,7 @@ async def run_design_agent(
         design_payload=design_payload,
         calibrated_search_space=calibrated_search_space,
         calibration_context=calibration_context,
+        design_simulation=design_simulation_payload,
         saved_path=saved_path,
     )
 
@@ -1852,6 +1891,7 @@ async def run_design_agent(
             requested_condition_overrides=condition_overrides,
             scan_payload=scan_payload,
             sensitivity_output=sensitivity_output,
+            design_simulation=design_simulation_payload,
             report_name=report_name,
             saved_report_path=saved_path,
         )
@@ -1872,6 +1912,7 @@ async def run_design_agent(
                 "design_validation": str(run_artifacts.run_dir / "design_validation.md"),
                 "design_agent": str(run_artifacts.run_dir / "design_agent.md"),
                 "design_sensitivity": str(run_artifacts.run_dir / "design_sensitivity.md"),
+                "design_simulation": str(run_artifacts.run_dir / "design_simulation.md"),
                 "formulation_mapping": str(run_artifacts.run_dir / "formulation_mapping.md"),
                 "design_summary": str(run_artifacts.run_dir / "design_summary.json"),
                 "final_summary": str(run_artifacts.run_dir / "final_summary.md"),
@@ -1886,7 +1927,7 @@ async def run_design_agent(
         run_dir=run_artifacts.run_dir if run_artifacts else None,
         metadata_path=metadata_path,
         design_output=design_output,
-        simulation_output=sensitivity_output,
+        simulation_output=design_simulation_output,
         formulation_output=formulation_output,
     )
 
@@ -2097,6 +2138,180 @@ async def run_design_campaign(
     )
 
 
+def _build_simulation_workflow_ledger(execution_payload: dict[str, object]) -> str:
+    result_payload = execution_payload.get("simulation_result", {}) if isinstance(execution_payload.get("simulation_result"), dict) else {}
+    metrics_payload = execution_payload.get("simulation_metrics", {}) if isinstance(execution_payload.get("simulation_metrics"), dict) else {}
+    warnings = result_payload.get("warnings", []) if isinstance(result_payload.get("warnings"), list) else []
+    lines = [
+        "## FEBio Simulation Workflow",
+        f"- scenario: {execution_payload.get('request', {}).get('scenario', 'NR') if isinstance(execution_payload.get('request'), dict) else 'NR'}",
+        f"- status: {execution_payload.get('status', 'NR')}",
+        f"- effective_stiffness: {metrics_payload.get('effective_stiffness', 'NR')}",
+        f"- peak_stress: {metrics_payload.get('peak_stress', 'NR')}",
+        f"- displacement_decay_length: {metrics_payload.get('displacement_decay_length', 'NR')}",
+        f"- strain_heterogeneity: {metrics_payload.get('strain_heterogeneity', 'NR')}",
+        f"- target_mismatch_score: {metrics_payload.get('target_mismatch_score', 'NR')}",
+        f"- feasibility_flags: {json.dumps(metrics_payload.get('feasibility_flags', {}), ensure_ascii=False)}",
+    ]
+    if warnings:
+        lines.extend(["", "## Warnings", *[f"- {warning}" for warning in warnings]])
+    return "\n".join(lines)
+
+
+def _build_simulation_report_markdown(
+    *,
+    query: str,
+    request_payload: dict[str, object],
+    execution_payload: dict[str, object],
+) -> str:
+    result_payload = execution_payload.get("simulation_result", {}) if isinstance(execution_payload.get("simulation_result"), dict) else {}
+    metrics_payload = execution_payload.get("simulation_metrics", {}) if isinstance(execution_payload.get("simulation_metrics"), dict) else {}
+    recommendation_lines = [
+        "- Use bulk effective stiffness and peak stress to judge basic material feasibility.",
+        "- Use stress propagation distance and strain heterogeneity to judge whether local cell/organoid perturbations remain localized or spread excessively.",
+    ]
+    if metrics_payload.get("candidate_suitability_score_components"):
+        recommendation_lines.append(
+            f"- Candidate suitability score: {metrics_payload.get('candidate_suitability_score_components', {}).get('suitability_score', 'NR')}"
+        )
+    uncertainty_lines = [
+        "- This simulation is template-driven and only supports a constrained phase-1 geometry/material space.",
+        f"- FEBio warnings: {json.dumps(result_payload.get('warnings', []), ensure_ascii=False)}",
+        f"- Error message: {result_payload.get('error_message', 'NR')}",
+    ]
+    return "\n".join(
+        [
+            "# FEBio Simulation Report",
+            "",
+            "## 1. Goal",
+            f"- Query: {query}",
+            f"- Request: {json.dumps(request_payload, ensure_ascii=False)}",
+            "",
+            "## 2. Execution Status",
+            f"- status: {execution_payload.get('status', 'NR')}",
+            f"- runner: {json.dumps(execution_payload.get('runner', {}), ensure_ascii=False)}",
+            f"- warnings: {json.dumps(result_payload.get('warnings', []), ensure_ascii=False)}",
+            f"- error_message: {result_payload.get('error_message', 'NR')}",
+            "",
+            "## 3. Simulation Evidence",
+            f"- extracted_fields: {json.dumps(result_payload.get('extracted_fields', {}), ensure_ascii=False)}",
+            "",
+            "## 4. Key Mechanical Metrics",
+            f"- effective_stiffness: {metrics_payload.get('effective_stiffness', 'NR')}",
+            f"- peak_stress: {metrics_payload.get('peak_stress', 'NR')}",
+            f"- peak_matrix_stress: {metrics_payload.get('peak_matrix_stress', 'NR')}",
+            f"- displacement_decay_length: {metrics_payload.get('displacement_decay_length', 'NR')}",
+            f"- stress_propagation_distance: {metrics_payload.get('stress_propagation_distance', 'NR')}",
+            f"- strain_heterogeneity: {metrics_payload.get('strain_heterogeneity', 'NR')}",
+            f"- target_mismatch_score: {metrics_payload.get('target_mismatch_score', 'NR')}",
+            f"- displacement_field_summary: {json.dumps(metrics_payload.get('displacement_field_summary', {}), ensure_ascii=False)}",
+            f"- matrix_stress_distribution_summary: {json.dumps(metrics_payload.get('matrix_stress_distribution_summary', {}), ensure_ascii=False)}",
+            f"- interface_deformation: {metrics_payload.get('interface_deformation', 'NR')}",
+            f"- compression_tension_region_summary: {json.dumps(metrics_payload.get('compression_tension_region_summary', {}), ensure_ascii=False)}",
+            f"- candidate_suitability_score_components: {json.dumps(metrics_payload.get('candidate_suitability_score_components', {}), ensure_ascii=False)}",
+            f"- feasibility_flags: {json.dumps(metrics_payload.get('feasibility_flags', {}), ensure_ascii=False)}",
+            "",
+            "## 5. Recommendation Rationale",
+            *recommendation_lines,
+            "",
+            "## 6. Uncertainty and Failure Modes",
+            *uncertainty_lines,
+            "",
+            "## 7. Artifact Paths",
+            f"- simulation_dir: {execution_payload.get('simulation_dir', 'NR')}",
+            f"- final_summary_path: {execution_payload.get('final_summary_path', 'NR')}",
+        ]
+    )
+
+
+def _build_simulation_final_summary(execution_payload: dict[str, object], saved_path: str) -> str:
+    metrics_payload = execution_payload.get("simulation_metrics", {}) if isinstance(execution_payload.get("simulation_metrics"), dict) else {}
+    return (
+        f"Simulation workflow finished. status={execution_payload.get('status', 'NR')}, "
+        f"scenario={execution_payload.get('request', {}).get('scenario', 'NR') if isinstance(execution_payload.get('request'), dict) else 'NR'}, "
+        f"effective_stiffness={metrics_payload.get('effective_stiffness', 'NR')}, "
+        f"peak_stress={metrics_payload.get('peak_stress', 'NR')}. Report saved to {saved_path}."
+    )
+
+
+async def run_simulation_workflow(
+    *,
+    config: AppConfig,
+    query: str,
+    report_name: str,
+    simulation_scenario: str,
+    simulation_request_json: str,
+    target_stiffness: Optional[float],
+    cell_contractility: Optional[float],
+    organoid_radius: Optional[float],
+    matrix_youngs_modulus: Optional[float],
+    matrix_poisson_ratio: Optional[float],
+    progress_callback: Optional[Callable[[str, str], None]] = None,
+    run_artifacts: Optional[RunArtifacts] = None,
+) -> ResearchRunResult:
+    tools = _tool_map(config)
+    _emit_progress(progress_callback, "simulation_request", "[0/3] Building constrained FEBio simulation request...")
+    request_text = tools["build_febio_simulation_request"](
+        simulation_scenario,
+        simulation_request_json,
+        float(target_stiffness or 0.0),
+        float(cell_contractility or 0.0),
+        float(organoid_radius or 0.0),
+        float(matrix_youngs_modulus or 0.0),
+        float(matrix_poisson_ratio if matrix_poisson_ratio is not None else 0.3),
+    )
+    request_payload = _parse_json_object(request_text)
+    if not request_payload:
+        raise RuntimeError(f"Failed to build FEBio simulation request: {request_text}")
+
+    _emit_progress(progress_callback, "simulation_runner", "[1/3] Running FEBio simulation...")
+    run_text = tools["run_febio_simulation"](json.dumps(request_payload, ensure_ascii=False), "")
+    execution_payload = _parse_json_object(run_text)
+    if not execution_payload:
+        raise RuntimeError(f"FEBio simulation workflow failed: {run_text}")
+
+    simulation_output = _build_simulation_workflow_ledger(execution_payload)
+    if run_artifacts is not None:
+        write_stage_text(run_artifacts.run_dir, "simulation_agent", simulation_output)
+
+    _emit_progress(progress_callback, "simulation_writer", "[2/3] Writing FEBio simulation report...")
+    report_content = _build_simulation_report_markdown(
+        query=query,
+        request_payload=request_payload,
+        execution_payload=execution_payload,
+    )
+    saved_path = tools["save_report"](report_name, report_content)
+    final_summary = _build_simulation_final_summary(execution_payload, saved_path)
+
+    metadata_path = None
+    if run_artifacts is not None:
+        write_stage_text(run_artifacts.run_dir, "final_summary", final_summary)
+        metadata_path = _write_run_metadata(
+            run_artifacts=run_artifacts,
+            config=config,
+            query=query,
+            workflow="simulation",
+            report_name=report_name,
+            report_path=expected_report_path(config, report_name),
+            final_summary=final_summary,
+            stage_files={
+                "simulation_agent": str(run_artifacts.run_dir / "simulation_agent.md"),
+                "simulation_dir": str(run_artifacts.run_dir / "simulation"),
+                "final_summary": str(run_artifacts.run_dir / "final_summary.md"),
+            },
+        )
+
+    _emit_progress(progress_callback, "done", final_summary)
+    return ResearchRunResult(
+        workflow="simulation",
+        report_path=expected_report_path(config, report_name),
+        final_summary=final_summary,
+        run_dir=run_artifacts.run_dir if run_artifacts else None,
+        metadata_path=metadata_path,
+        simulation_output=simulation_output,
+    )
+
+
 async def run_benchmark_workflow(
     *,
     config: AppConfig,
@@ -2116,6 +2331,7 @@ async def run_benchmark_workflow(
     repeatability_output = _build_repeatability_benchmark_ledger(payload["repeatability_benchmark"])
     identifiability_output = _build_identifiability_benchmark_ledger(payload["identifiability_proxy_benchmark"])
     fit_output = _build_fit_benchmark_ledger(payload["mechanics_fit_benchmark"])
+    simulation_smoke_output = _build_simulation_smoke_benchmark_ledger(payload["simulation_smoke_benchmark"])
     calibration_design_output = _build_calibration_design_benchmark_ledger(payload["calibration_design_benchmark"])
     benchmark_output = _build_benchmark_summary_ledger(query=query, payload=payload)
 
@@ -2128,6 +2344,7 @@ async def run_benchmark_workflow(
         write_stage_text(run_artifacts.run_dir, "benchmark_repeatability", repeatability_output)
         write_stage_text(run_artifacts.run_dir, "benchmark_identifiability", identifiability_output)
         write_stage_text(run_artifacts.run_dir, "benchmark_fit", fit_output)
+        write_stage_text(run_artifacts.run_dir, "benchmark_simulation_smoke", simulation_smoke_output)
         write_stage_text(run_artifacts.run_dir, "benchmark_calibration_design", calibration_design_output)
         write_json(run_artifacts.run_dir / "benchmark_summary.json", payload)
 
@@ -2144,6 +2361,7 @@ async def run_benchmark_workflow(
         repeatability_output=repeatability_output,
         identifiability_output=identifiability_output,
         fit_output=fit_output,
+        simulation_smoke_output=simulation_smoke_output,
         calibration_design_output=calibration_design_output,
     )
     saved_path = tools["save_report"](report_name, report_content)
@@ -2169,6 +2387,7 @@ async def run_benchmark_workflow(
                 "benchmark_repeatability": str(run_artifacts.run_dir / "benchmark_repeatability.md"),
                 "benchmark_identifiability": str(run_artifacts.run_dir / "benchmark_identifiability.md"),
                 "benchmark_fit": str(run_artifacts.run_dir / "benchmark_fit.md"),
+                "benchmark_simulation_smoke": str(run_artifacts.run_dir / "benchmark_simulation_smoke.md"),
                 "benchmark_calibration_design": str(run_artifacts.run_dir / "benchmark_calibration_design.md"),
                 "benchmark_summary": str(run_artifacts.run_dir / "benchmark_summary.json"),
                 "final_summary": str(run_artifacts.run_dir / "final_summary.md"),
@@ -2182,9 +2401,9 @@ async def run_benchmark_workflow(
         final_summary=final_summary,
         run_dir=run_artifacts.run_dir if run_artifacts else None,
         metadata_path=metadata_path,
-        benchmark_output=benchmark_output,
+        benchmark_output="\n\n".join([benchmark_output, simulation_smoke_output]),
         mechanics_output=fit_output,
-        simulation_output="\n\n".join([solver_output, load_output, scaling_output]),
+        simulation_output="\n\n".join([solver_output, load_output, scaling_output, simulation_smoke_output]),
         design_output="\n\n".join([design_output, property_design_output, repeatability_output, identifiability_output, calibration_design_output]),
     )
 
@@ -2388,6 +2607,12 @@ async def run_research_agent(
     simulation_crosslink_prob: Optional[float] = None,
     simulation_domain_size: Optional[float] = None,
     target_stiffness: Optional[float] = None,
+    simulation_scenario: str = "bulk_mechanics",
+    simulation_request_json: str = "",
+    cell_contractility: Optional[float] = None,
+    organoid_radius: Optional[float] = None,
+    matrix_youngs_modulus: Optional[float] = None,
+    matrix_poisson_ratio: Optional[float] = None,
     target_anisotropy: float = 0.1,
     target_connectivity: float = 0.95,
     target_stress_propagation: float = 0.5,
@@ -2400,6 +2625,9 @@ async def run_research_agent(
     design_top_k: int = 3,
     design_candidate_budget: int = 12,
     design_monte_carlo_runs: int = 4,
+    design_run_simulation: bool = False,
+    design_simulation_scenario: str = "bulk_mechanics",
+    design_simulation_top_k: int = 2,
     condition_concentration_fraction: Optional[float] = None,
     condition_curing_seconds: Optional[float] = None,
     condition_overrides_json: str = "",
@@ -2502,6 +2730,21 @@ async def run_research_agent(
             progress_callback=progress_callback,
             run_artifacts=run_artifacts,
         )
+    if workflow == "simulation":
+        return await run_simulation_workflow(
+            config=config,
+            query=query,
+            report_name=report_name,
+            simulation_scenario=simulation_scenario,
+            simulation_request_json=simulation_request_json,
+            target_stiffness=target_stiffness,
+            cell_contractility=cell_contractility,
+            organoid_radius=organoid_radius,
+            matrix_youngs_modulus=matrix_youngs_modulus,
+            matrix_poisson_ratio=matrix_poisson_ratio,
+            progress_callback=progress_callback,
+            run_artifacts=run_artifacts,
+        )
     if workflow == "design":
         if target_stiffness is None:
             raise RuntimeError("`design` workflow requires --target-stiffness.")
@@ -2522,6 +2765,14 @@ async def run_research_agent(
             design_top_k=design_top_k,
             design_candidate_budget=design_candidate_budget,
             design_monte_carlo_runs=design_monte_carlo_runs,
+            design_run_simulation=design_run_simulation,
+            design_simulation_scenario=design_simulation_scenario,
+            design_simulation_top_k=design_simulation_top_k,
+            cell_contractility=cell_contractility,
+            organoid_radius=organoid_radius,
+            matrix_youngs_modulus=matrix_youngs_modulus,
+            matrix_poisson_ratio=matrix_poisson_ratio,
+            simulation_request_json=simulation_request_json,
             condition_concentration_fraction=condition_concentration_fraction,
             condition_curing_seconds=condition_curing_seconds,
             condition_overrides=condition_overrides,
@@ -2618,6 +2869,12 @@ def run_research_agent_sync(
     simulation_crosslink_prob: Optional[float] = None,
     simulation_domain_size: Optional[float] = None,
     target_stiffness: Optional[float] = None,
+    simulation_scenario: str = "bulk_mechanics",
+    simulation_request_json: str = "",
+    cell_contractility: Optional[float] = None,
+    organoid_radius: Optional[float] = None,
+    matrix_youngs_modulus: Optional[float] = None,
+    matrix_poisson_ratio: Optional[float] = None,
     target_anisotropy: float = 0.1,
     target_connectivity: float = 0.95,
     target_stress_propagation: float = 0.5,
@@ -2630,6 +2887,9 @@ def run_research_agent_sync(
     design_top_k: int = 3,
     design_candidate_budget: int = 12,
     design_monte_carlo_runs: int = 4,
+    design_run_simulation: bool = False,
+    design_simulation_scenario: str = "bulk_mechanics",
+    design_simulation_top_k: int = 2,
     condition_concentration_fraction: Optional[float] = None,
     condition_curing_seconds: Optional[float] = None,
     condition_overrides_json: str = "",
@@ -2664,6 +2924,12 @@ def run_research_agent_sync(
             simulation_crosslink_prob=simulation_crosslink_prob,
             simulation_domain_size=simulation_domain_size,
             target_stiffness=target_stiffness,
+            simulation_scenario=simulation_scenario,
+            simulation_request_json=simulation_request_json,
+            cell_contractility=cell_contractility,
+            organoid_radius=organoid_radius,
+            matrix_youngs_modulus=matrix_youngs_modulus,
+            matrix_poisson_ratio=matrix_poisson_ratio,
             target_anisotropy=target_anisotropy,
             target_connectivity=target_connectivity,
             target_stress_propagation=target_stress_propagation,
@@ -2676,6 +2942,9 @@ def run_research_agent_sync(
             design_top_k=design_top_k,
             design_candidate_budget=design_candidate_budget,
             design_monte_carlo_runs=design_monte_carlo_runs,
+            design_run_simulation=design_run_simulation,
+            design_simulation_scenario=design_simulation_scenario,
+            design_simulation_top_k=design_simulation_top_k,
             condition_concentration_fraction=condition_concentration_fraction,
             condition_curing_seconds=condition_curing_seconds,
             condition_overrides_json=condition_overrides_json,
@@ -3332,6 +3601,173 @@ def _assess_design_candidate(
     }
 
 
+def _design_simulation_not_run_payload(*, enabled: bool, scenario: str, reason: str) -> dict[str, object]:
+    return {
+        "enabled": enabled,
+        "scenario": scenario,
+        "status": "not_run" if not enabled else "unavailable",
+        "reason": reason,
+        "candidate_simulations": [],
+        "comparison": {},
+    }
+
+
+def _candidate_simulation_request(
+    *,
+    candidate: dict[str, object],
+    target_stiffness: float,
+    scenario: str,
+    simulation_request_json: str,
+    cell_contractility: Optional[float],
+    organoid_radius: Optional[float],
+    matrix_youngs_modulus: Optional[float],
+    matrix_poisson_ratio: Optional[float],
+) -> dict[str, object]:
+    return design_payload_to_simulation_requests(
+        {"top_candidates": [candidate]},
+        top_k=1,
+        options=CandidateSimulationMappingOptions(
+            scenario=scenario,
+            target_stiffness=target_stiffness,
+            simulation_request_overrides=_parse_json_object(simulation_request_json) if simulation_request_json.strip() else {},
+            cell_contractility=cell_contractility,
+            organoid_radius=organoid_radius,
+            matrix_youngs_modulus=matrix_youngs_modulus,
+            matrix_poisson_ratio=matrix_poisson_ratio,
+        ),
+    )[0]
+
+
+def _run_design_candidate_simulations(
+    *,
+    config: AppConfig,
+    design_payload: dict[str, object],
+    target_stiffness: float,
+    scenario: str,
+    simulation_request_json: str,
+    cell_contractility: Optional[float],
+    organoid_radius: Optional[float],
+    matrix_youngs_modulus: Optional[float],
+    matrix_poisson_ratio: Optional[float],
+    top_k: int,
+) -> dict[str, object]:
+    tools = _tool_map(config)
+    top_candidates = design_payload.get("top_candidates", []) if isinstance(design_payload, dict) else []
+    if not top_candidates:
+        return {
+            "enabled": True,
+            "scenario": scenario,
+            "status": "not_run",
+            "reason": "No top candidates were available for FEBio verification.",
+            "candidate_simulations": [],
+            "mapped_requests": [],
+            "comparison": {},
+        }
+    mapped_requests = design_payload_to_simulation_requests(
+        design_payload,
+        top_k=max(1, int(top_k)),
+        options=CandidateSimulationMappingOptions(
+            scenario=scenario,
+            target_stiffness=target_stiffness,
+            simulation_request_overrides=_parse_json_object(simulation_request_json) if simulation_request_json.strip() else {},
+            cell_contractility=cell_contractility,
+            organoid_radius=organoid_radius,
+            matrix_youngs_modulus=matrix_youngs_modulus,
+            matrix_poisson_ratio=matrix_poisson_ratio,
+        ),
+    )
+    candidate_payloads: list[dict[str, object]] = []
+    for candidate, request in zip(top_candidates[: max(1, int(top_k))], mapped_requests):
+        candidate_id = f"candidate_rank_{int(candidate.get('rank', 0)):02d}"
+        run_text = tools["run_febio_simulation"](request.to_json(), candidate_id)
+        run_payload = _parse_json_object(run_text)
+        if not run_payload:
+            run_payload = {
+                "status": "failed",
+                "request": request.to_dict(),
+                "final_summary": run_text,
+                "simulation_metrics": {},
+                "simulation_result": {"warnings": [run_text]},
+            }
+        candidate_payloads.append(
+            {
+                "candidate_id": candidate_id,
+                "candidate_rank": candidate.get("rank", "NR"),
+                "design_candidate": candidate,
+                **run_payload,
+            }
+        )
+    comparison = compare_simulation_candidates_payloads(candidate_payloads)
+    available = any(row.get("status") == "succeeded" for row in candidate_payloads)
+    return {
+        "enabled": True,
+        "scenario": scenario,
+        "status": "completed" if available else "unavailable",
+        "reason": config.febio_status_message if not available and not config.febio_executable else "",
+        "candidate_simulations": candidate_payloads,
+        "mapped_requests": candidate_requests_summary(mapped_requests),
+        "comparison": comparison,
+    }
+
+
+def _build_design_simulation_ledger(payload: dict[str, object]) -> str:
+    lines = [
+        "## FEBio Simulation Verification",
+        f"- enabled: {payload.get('enabled', False)}",
+        f"- scenario: {payload.get('scenario', 'NR')}",
+        f"- status: {payload.get('status', 'NR')}",
+    ]
+    if payload.get("reason"):
+        lines.append(f"- note: {payload.get('reason')}")
+    mapped_requests = payload.get("mapped_requests", []) if isinstance(payload.get("mapped_requests"), list) else []
+    if mapped_requests:
+        lines.append(f"- mapped_request_count: {len(mapped_requests)}")
+    ranking = payload.get("comparison", {}).get("ranking", []) if isinstance(payload.get("comparison"), dict) else []
+    if ranking:
+        lines.extend(
+            [
+                "",
+                "| Rank | candidate_id | comparison_score | feasible | target_mismatch_score | peak_stress | stress_propagation_distance | suitability_score |",
+                "| --- | --- | --- | --- | --- | --- | --- | --- |",
+            ]
+        )
+        for row in ranking[:5]:
+            lines.append(
+                "| {rank} | {candidate_id} | {comparison_score:.4f} | {feasible} | {target_mismatch_score} | {peak_stress} | {stress_propagation_distance} | {candidate_suitability_score} |".format(
+                    rank=int(row.get("rank", 0)),
+                    candidate_id=row.get("candidate_id", "NR"),
+                    comparison_score=float(row.get("comparison_score", 0.0)),
+                    feasible="yes" if row.get("feasible") else "no",
+                    target_mismatch_score=row.get("target_mismatch_score", "NR"),
+                    peak_stress=row.get("peak_stress", "NR"),
+                    stress_propagation_distance=row.get("stress_propagation_distance", "NR"),
+                    candidate_suitability_score=row.get("candidate_suitability_score", "NR"),
+                )
+            )
+    candidate_payloads = payload.get("candidate_simulations", [])
+    if candidate_payloads:
+        lines.append("")
+        for item in candidate_payloads[:5]:
+            metrics = item.get("simulation_metrics", {}) if isinstance(item.get("simulation_metrics"), dict) else {}
+            lines.extend(
+                [
+                    f"### {item.get('candidate_id', 'NR')}",
+                    f"- status: {item.get('status', 'NR')}",
+                    f"- effective_stiffness: {metrics.get('effective_stiffness', 'NR')}",
+                    f"- peak_stress: {metrics.get('peak_stress', 'NR')}",
+                    f"- displacement_decay_length: {metrics.get('displacement_decay_length', 'NR')}",
+                    f"- stress_propagation_distance: {metrics.get('stress_propagation_distance', 'NR')}",
+                    f"- strain_heterogeneity: {metrics.get('strain_heterogeneity', 'NR')}",
+                    f"- interface_deformation: {metrics.get('interface_deformation', 'NR')}",
+                    f"- candidate_suitability_score: {metrics.get('candidate_suitability_score_components', {}).get('suitability_score', 'NR') if isinstance(metrics.get('candidate_suitability_score_components'), dict) else 'NR'}",
+                    f"- target_mismatch_score: {metrics.get('target_mismatch_score', 'NR')}",
+                ]
+            )
+    elif not payload.get("reason"):
+        lines.append("- No FEBio verification payloads were generated.")
+    return "\n".join(lines)
+
+
 def _assess_design_campaign(
     *,
     validation_payload: dict[str, object],
@@ -3381,6 +3817,7 @@ def _build_design_summary_payload(
     requested_condition_overrides: dict[str, object] | None,
     scan_payload: dict[str, object],
     sensitivity_output: str,
+    design_simulation: dict[str, object] | None,
     report_name: str,
     saved_report_path: str,
 ) -> dict[str, object]:
@@ -3401,6 +3838,7 @@ def _build_design_summary_payload(
         "formulation_recommendations": formulation_recommendations,
         "sensitivity_payload": scan_payload,
         "sensitivity_summary": sensitivity_output,
+        "design_simulation": design_simulation or {},
         "top_candidates": top_candidates,
         "best_candidate": best_candidate,
         "predicted_material_observables": predict_material_observables(best_params) if best_params else {},
@@ -3421,6 +3859,7 @@ def _build_design_report_markdown(
     calibrated_search_space: dict[str, object] | None,
     calibration_context: dict[str, object] | None,
     sensitivity_output: str,
+    design_simulation: dict[str, object] | None,
 ) -> str:
     top_candidates = design_payload.get("top_candidates", []) if isinstance(design_payload, dict) else []
     table_lines = [
@@ -3481,6 +3920,43 @@ def _build_design_report_markdown(
     if not proxy_lines:
         proxy_lines = ["- No material-property proxy outputs available."]
 
+    simulation_lines = _build_design_simulation_ledger(design_simulation or {})
+    comparison = (design_simulation or {}).get("comparison", {}) if isinstance(design_simulation, dict) else {}
+    best_simulated = comparison.get("best_candidate", {}) if isinstance(comparison, dict) else {}
+    recommendation_lines = [
+        "- Use the top-ranked candidate from the mechanics-informed search as the primary fabrication target when FEBio verification is unavailable.",
+        "- Use the next two candidates as contingency designs and validate them experimentally.",
+    ]
+    if best_simulated:
+        recommendation_lines = [
+            f"- FEBio-backed best candidate: {best_simulated.get('candidate_id', 'NR')} with comparison_score={best_simulated.get('comparison_score', 'NR')}.",
+            "- Treat the FEBio ranking as an additional screening layer on top of the fiber-network search, not as a replacement for wet-lab validation.",
+        ]
+    simulation_metrics = best_simulated.get("simulation_metrics", {}) if isinstance(best_simulated, dict) and isinstance(best_simulated.get("simulation_metrics"), dict) else {}
+    key_mechanical_metrics_lines = [
+        f"- target_stiffness: {targets.get('stiffness', 'NR')}",
+        f"- design_best_stiffness_mean: {best_features.get('stiffness_mean', 'NR') if best_features else 'NR'}",
+        f"- design_best_anisotropy: {best_features.get('anisotropy', 'NR') if best_features else 'NR'}",
+        f"- design_best_connectivity: {best_features.get('connectivity', 'NR') if best_features else 'NR'}",
+        f"- design_best_stress_propagation: {best_features.get('stress_propagation', 'NR') if best_features else 'NR'}",
+        f"- febio_effective_stiffness: {simulation_metrics.get('effective_stiffness', 'NR')}",
+        f"- febio_peak_matrix_stress: {simulation_metrics.get('peak_matrix_stress', 'NR')}",
+        f"- febio_stress_propagation_distance: {simulation_metrics.get('stress_propagation_distance', 'NR')}",
+        f"- febio_strain_heterogeneity: {simulation_metrics.get('strain_heterogeneity', 'NR')}",
+    ]
+    uncertainty_lines = [
+        "- fiber-network ranking and FEBio verification are two different models; disagreement between them should be treated as a review signal, not automatically as a failure.",
+        "- The FEBio module remains template-driven and only covers fixed bulk, single-cell, and spheroid scenarios.",
+        "- Candidate-to-simulation mapping is deterministic and explainable, but still heuristic when translating abstract design parameters into geometric FE parameters.",
+    ]
+    if not design_simulation or (isinstance(design_simulation, dict) and design_simulation.get("status") in {"not_run", "unavailable"}):
+        uncertainty_lines.append("- FEBio was unavailable or not requested, so the recommendation is mechanics-informed but not FEBio-verified.")
+    if design_simulation and isinstance(design_simulation, dict):
+        for item in design_simulation.get("candidate_simulations", [])[:3]:
+            warnings = item.get("simulation_result", {}).get("warnings", []) if isinstance(item.get("simulation_result"), dict) else []
+            if warnings:
+                uncertainty_lines.append(f"- {item.get('candidate_id', 'candidate')}: warnings={json.dumps(warnings, ensure_ascii=False)}")
+
     return "\n".join(
         [
             "# ECM Mechanics Design Report",
@@ -3510,15 +3986,25 @@ def _build_design_report_markdown(
             "## 4. Sensitivity Of The Best Candidate",
             sensitivity_output,
             "",
-            "## 5. Material Property Proxies",
+            "## 5. Simulation Evidence",
+            simulation_lines,
+            "",
+            "## 6. Key Mechanical Metrics",
+            *key_mechanical_metrics_lines,
+            "",
+            "## 7. Recommendation Rationale",
+            *recommendation_lines,
+            "- These candidates are ranked by distance to target mechanics plus robustness penalties, and infeasible candidates are pushed behind feasible ones.",
+            "- Treat FEBio evidence as an explicit second gate over the mechanics-informed design shortlist.",
+            "",
+            "## 8. Uncertainty and Failure Modes",
+            *uncertainty_lines,
+            "",
+            "## 9. Material Property Proxies",
             *proxy_lines,
             "",
-            "## 6. Formulation Translation",
+            "## 10. Formulation Translation",
             *formulation_lines,
-            "",
-            "## 7. Interpretation",
-            "- These candidates are ranked by distance to target mechanics plus robustness penalties, and infeasible candidates are pushed behind feasible ones.",
-            "- Use the top-ranked candidate as the primary fabrication target and the next two candidates as contingency designs.",
         ]
     )
 
@@ -3530,6 +4016,7 @@ def _build_design_final_summary(
     design_payload: dict[str, object],
     calibrated_search_space: dict[str, object] | None,
     calibration_context: dict[str, object] | None,
+    design_simulation: dict[str, object] | None,
     saved_path: str,
 ) -> str:
     top_candidates = design_payload.get("top_candidates", []) if isinstance(design_payload, dict) else []
@@ -3545,12 +4032,24 @@ def _build_design_final_summary(
         )
     else:
         best_summary = "No candidate designs were returned."
+    simulation_status = (design_simulation or {}).get("status", "not_run") if isinstance(design_simulation, dict) else "not_run"
+    simulation_best = (
+        (design_simulation or {}).get("comparison", {}).get("best_candidate", {})
+        if isinstance(design_simulation, dict)
+        else {}
+    )
+    simulation_summary = (
+        f" FEBio_verification={simulation_status}, best_simulated_candidate={simulation_best.get('candidate_id', 'NR')}."
+        if simulation_status != "not_run"
+        else " FEBio_verification=not_run."
+    )
     return (
         f"Design workflow finished. physics_valid={validation_payload.get('physics_valid', 'NR')}. "
         f"screening_status={design_assessment.get('status', 'NR')}, "
         f"recommended_for_screening={design_assessment.get('recommended_for_screening', 'NR')}. "
         f"{best_summary} calibrated_search_space={'yes' if calibrated_search_space else 'no'}, "
-        f"calibration_context={json.dumps(calibration_context or {}, ensure_ascii=False)}. Report saved to {saved_path}."
+        f"calibration_context={json.dumps(calibration_context or {}, ensure_ascii=False)}."
+        f"{simulation_summary} Report saved to {saved_path}."
     )
 
 
@@ -4152,6 +4651,23 @@ def _build_fit_benchmark_ledger(payload: dict[str, object]) -> str:
     return "\n".join(lines)
 
 
+def _build_simulation_smoke_benchmark_ledger(payload: dict[str, object]) -> str:
+    summary = payload.get("summary", {}) if isinstance(payload, dict) else {}
+    return "\n".join(
+        [
+            "## FEBio Simulation Smoke Benchmark",
+            f"- available: {summary.get('available', 'NR')}",
+            f"- status: {summary.get('status', 'NR')}",
+            f"- overall_pass: {summary.get('overall_pass', 'NR')}",
+            f"- solver_converged: {summary.get('solver_converged', 'NR')}",
+            f"- effective_stiffness: {summary.get('effective_stiffness', 'NR')}",
+            f"- target_mismatch_score: {summary.get('target_mismatch_score', 'NR')}",
+            f"- peak_stress: {summary.get('peak_stress', 'NR')}",
+            f"- reason: {summary.get('reason', 'NR')}",
+        ]
+    )
+
+
 def _build_calibration_design_benchmark_ledger(payload: dict[str, object]) -> str:
     rows = payload.get("cases", []) if isinstance(payload, dict) else []
     lines = ["## Calibration-Aware Design Benchmark"]
@@ -4212,6 +4728,9 @@ def _build_benchmark_summary_ledger(*, query: str, payload: dict[str, object]) -
             f"- repeatability_stiffness_std: {summary.get('repeatability_stiffness_std', 'NR')}",
             f"- identifiability_risk: {summary.get('identifiability_risk', 'NR')}",
             f"- fit_mean_relative_error: {summary.get('fit_mean_relative_error', 'NR')}",
+            f"- simulation_smoke_available: {summary.get('simulation_smoke_available', 'NR')}",
+            f"- simulation_smoke_status: {summary.get('simulation_smoke_status', 'NR')}",
+            f"- simulation_smoke_pass: {summary.get('simulation_smoke_pass', 'NR')}",
             f"- calibration_benchmark_available: {summary.get('calibration_benchmark_available', 'NR')}",
             f"- calibration_design_improvement: {summary.get('calibration_design_improvement', 'NR')}",
             f"- calibration_cached_from_run: {summary.get('calibration_cached_from_run', 'NR')}",
@@ -4234,6 +4753,7 @@ def _build_benchmark_report_markdown(
     repeatability_output: str,
     identifiability_output: str,
     fit_output: str,
+    simulation_smoke_output: str,
     calibration_design_output: str,
 ) -> str:
     summary = payload.get("summary", {}) if isinstance(payload, dict) else {}
@@ -4254,6 +4774,11 @@ def _build_benchmark_report_markdown(
             f"- repeatability_stiffness_std: {summary.get('repeatability_stiffness_std', 'NR')}",
             f"- identifiability_risk: {summary.get('identifiability_risk', 'NR')}",
             f"- fit_mean_relative_error: {summary.get('fit_mean_relative_error', 'NR')}",
+            f"- simulation_smoke_available: {summary.get('simulation_smoke_available', 'NR')}",
+            f"- simulation_smoke_status: {summary.get('simulation_smoke_status', 'NR')}",
+            f"- simulation_smoke_pass: {summary.get('simulation_smoke_pass', 'NR')}",
+            f"- simulation_smoke_effective_stiffness: {summary.get('simulation_smoke_effective_stiffness', 'NR')}",
+            f"- simulation_smoke_target_mismatch_score: {summary.get('simulation_smoke_target_mismatch_score', 'NR')}",
             f"- calibration_benchmark_available: {summary.get('calibration_benchmark_available', 'NR')}",
             f"- calibration_design_improvement: {summary.get('calibration_design_improvement', 'NR')}",
             f"- calibration_cached_from_run: {summary.get('calibration_cached_from_run', 'NR')}",
@@ -4285,16 +4810,20 @@ def _build_benchmark_report_markdown(
             "## 10. Mechanics Fit Benchmark",
             fit_output,
             "",
-            "## 11. Calibration-Aware Design Benchmark",
+            "## 11. FEBio Simulation Smoke Benchmark",
+            simulation_smoke_output,
+            "",
+            "## 12. Calibration-Aware Design Benchmark",
             calibration_design_output,
             "",
-            "## 12. Interpretation",
+            "## 13. Interpretation",
             "- Use solver residuals and convergence rate to judge numerical stability.",
             "- Use load-ladder and scaling results to judge whether the solver remains trustworthy as load and network size increase.",
             "- Use inverse-design recovery error to judge whether target stiffness windows are realistically reachable.",
             "- Use property-target design results to judge whether the backend can match material-property proxies, not only bulk stiffness.",
             "- Use repeatability and identifiability proxy outputs to judge whether the inverse problem is stable or degenerate.",
             "- Use synthetic fit recovery to judge whether low-dimensional constitutive fitting is numerically reliable.",
+            "- Use the FEBio smoke result to verify that the template-driven FEBio integration layer still runs end-to-end in the current environment.",
             "- Use calibration-aware design benchmarking to judge whether experimental priors actually improve mechanics matching.",
         ]
     )
@@ -4311,7 +4840,8 @@ def _build_benchmark_final_summary(*, payload: dict[str, object], saved_path: st
         f"property_target_mean_error={summary.get('property_target_mean_error', 'NR')}, "
         f"repeatability_stiffness_std={summary.get('repeatability_stiffness_std', 'NR')}, "
         f"identifiability_risk={summary.get('identifiability_risk', 'NR')}, "
-        f"fit_mean_relative_error={summary.get('fit_mean_relative_error', 'NR')}. "
+        f"fit_mean_relative_error={summary.get('fit_mean_relative_error', 'NR')}, "
+        f"simulation_smoke_status={summary.get('simulation_smoke_status', 'NR')}. "
         f"calibration_design_improvement={summary.get('calibration_design_improvement', 'NR')}. "
         f"Report saved to {saved_path}."
     )

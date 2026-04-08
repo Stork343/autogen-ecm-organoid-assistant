@@ -181,6 +181,109 @@ class SaveReportTests(unittest.TestCase):
             lines = log_path.read_text(encoding="utf-8").strip().splitlines()
             self.assertEqual(json.loads(lines[-1])["tool_name"], "design_fiber_network_candidates")
 
+    def test_build_febio_simulation_request_returns_structured_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            project_dir = Path(tmp_dir)
+            for dirname in ("memory", "library", "reports", "templates", "runs", ".cache"):
+                (project_dir / dirname).mkdir()
+            run_dir = project_dir / "runs" / "simulation_run"
+            run_dir.mkdir(parents=True)
+
+            config = AppConfig(
+                project_dir=project_dir,
+                memory_dir=project_dir / "memory",
+                library_dir=project_dir / "library",
+                report_dir=project_dir / "reports",
+                runs_dir=project_dir / "runs",
+                cache_dir=project_dir / ".cache",
+                template_dir=project_dir / "templates",
+                model_provider="deepseek",
+                model="deepseek-chat",
+                model_api_key="placeholder",
+                model_base_url="https://api.deepseek.com/v1",
+                active_run_dir=run_dir,
+                cache_ttl_hours=168,
+                max_pubmed_results=5,
+                ncbi_email=None,
+                ncbi_api_key=None,
+                crossref_mailto=None,
+                frontend_require_login=False,
+                frontend_username=None,
+                frontend_password=None,
+                frontend_password_sha256=None,
+                frontend_public_host="0.0.0.0",
+                frontend_public_port=8525,
+            )
+            tools = {tool.__name__: tool for tool in build_tools(config)}
+
+            result = tools["build_febio_simulation_request"](
+                "single_cell_contraction",
+                "",
+                8.0,
+                0.02,
+                0.18,
+                8.0,
+                0.3,
+            )
+            payload = json.loads(result)
+            self.assertEqual(payload["scenario"], "single_cell_contraction")
+            self.assertEqual(payload["cell_contractility"], 0.02)
+            self.assertEqual(payload["matrix_youngs_modulus"], 8.0)
+
+    def test_build_febio_simulation_request_can_map_design_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            project_dir = Path(tmp_dir)
+            for dirname in ("memory", "library", "reports", "templates", "runs", ".cache"):
+                (project_dir / dirname).mkdir()
+            run_dir = project_dir / "runs" / "simulation_run"
+            run_dir.mkdir(parents=True)
+
+            config = AppConfig(
+                project_dir=project_dir,
+                memory_dir=project_dir / "memory",
+                library_dir=project_dir / "library",
+                report_dir=project_dir / "reports",
+                runs_dir=project_dir / "runs",
+                cache_dir=project_dir / ".cache",
+                template_dir=project_dir / "templates",
+                model_provider="deepseek",
+                model="deepseek-chat",
+                model_api_key="placeholder",
+                model_base_url="https://api.deepseek.com/v1",
+                active_run_dir=run_dir,
+                cache_ttl_hours=168,
+                max_pubmed_results=5,
+                ncbi_email=None,
+                ncbi_api_key=None,
+                crossref_mailto=None,
+                frontend_require_login=False,
+                frontend_username=None,
+                frontend_password=None,
+                frontend_password_sha256=None,
+                frontend_public_host="0.0.0.0",
+                frontend_public_port=8525,
+            )
+            tools = {tool.__name__: tool for tool in build_tools(config)}
+            design_candidate = {
+                "rank": 1,
+                "score": 0.4,
+                "parameters": {"domain_size": 1.0},
+                "features": {"stiffness_mean": 8.0, "stress_propagation": 0.6, "anisotropy": 0.1, "connectivity": 0.95},
+            }
+            result = tools["build_febio_simulation_request"](
+                "organoid_spheroid",
+                "",
+                8.0,
+                0.0,
+                0.0,
+                8.0,
+                0.3,
+                json.dumps(design_candidate),
+            )
+            payload = json.loads(result)
+            self.assertEqual(payload["scenario"], "organoid_spheroid")
+            self.assertIn("mapping_version", payload["metadata"])
+
 
 class ParsingHelperTests(unittest.TestCase):
     def test_extract_abstract_excerpt_stops_before_introduction(self) -> None:

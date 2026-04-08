@@ -21,8 +21,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--workflow",
         default="team",
-        choices=("team", "single", "mechanics", "hybrid", "design", "design_campaign", "benchmark", "datasets", "calibration"),
-        help="Execution mode. `team` runs the literature collaboration workflow, `single` keeps the original single-agent workflow, `mechanics` runs ECM mechanics modeling, `hybrid` chains literature + mechanics + simulation, `design` runs target-driven ECM inverse design, `design_campaign` scans multiple target windows, `benchmark` evaluates mechanics-core performance, `datasets` manages public mechanics datasets, and `calibration` turns experimental datasets into ECM calibration priors.",
+        choices=("team", "single", "mechanics", "hybrid", "simulation", "design", "design_campaign", "benchmark", "datasets", "calibration"),
+        help="Execution mode. `team` runs the literature collaboration workflow, `single` keeps the original single-agent workflow, `mechanics` runs ECM mechanics modeling, `hybrid` chains literature + mechanics + simulation, `simulation` runs a fixed FEBio-backed scenario, `design` runs target-driven ECM inverse design, `design_campaign` scans multiple target windows, `benchmark` evaluates mechanics-core performance, `datasets` manages public mechanics datasets, and `calibration` turns experimental datasets into ECM calibration priors.",
     )
     parser.add_argument(
         "--project-dir",
@@ -91,6 +91,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--simulation-crosslink-prob", default=None, type=float, help="Crosslink probability for `--workflow hybrid`.")
     parser.add_argument("--simulation-domain-size", default=None, type=float, help="Domain size for `--workflow hybrid`.")
     parser.add_argument("--target-stiffness", default=None, type=float, help="Target bulk stiffness for `--workflow design`.")
+    parser.add_argument(
+        "--simulation-scenario",
+        default="bulk_mechanics",
+        choices=("bulk_mechanics", "single_cell_contraction", "organoid_spheroid"),
+        help="Fixed FEBio scenario for `--workflow simulation` or FEBio-backed design verification.",
+    )
+    parser.add_argument(
+        "--simulation-request-json",
+        default="",
+        help="Optional JSON object with additional fixed-schema FEBio request fields. This does not allow arbitrary XML.",
+    )
+    parser.add_argument("--cell-contractility", default=None, type=float, help="Cell contraction magnitude for FEBio single-cell simulations.")
+    parser.add_argument("--organoid-radius", default=None, type=float, help="Organoid radius for FEBio spheroid simulations.")
+    parser.add_argument("--matrix-youngs-modulus", default=None, type=float, help="Matrix Young's modulus override for FEBio-backed simulations.")
+    parser.add_argument("--matrix-poisson-ratio", default=None, type=float, help="Matrix Poisson ratio override for FEBio-backed simulations.")
     parser.add_argument("--target-anisotropy", default=0.1, type=float, help="Target anisotropy for `--workflow design`.")
     parser.add_argument("--target-connectivity", default=0.95, type=float, help="Target connectivity for `--workflow design`.")
     parser.add_argument("--target-stress-propagation", default=0.5, type=float, help="Target stress propagation for `--workflow design`.")
@@ -111,6 +126,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--design-top-k", default=3, type=int, help="Number of top ECM candidates to report for `--workflow design`.")
     parser.add_argument("--design-candidate-budget", default=12, type=int, help="Number of deterministic candidate evaluations for `--workflow design`.")
     parser.add_argument("--design-monte-carlo-runs", default=4, type=int, help="Monte Carlo replicates per candidate for `--workflow design`.")
+    parser.add_argument("--design-run-simulation", action="store_true", help="Run FEBio verification on top-k design candidates when FEBio is available.")
+    parser.add_argument(
+        "--design-simulation-scenario",
+        default="bulk_mechanics",
+        choices=("bulk_mechanics", "single_cell_contraction", "organoid_spheroid"),
+        help="FEBio scenario used when `--design-run-simulation` is enabled.",
+    )
+    parser.add_argument("--design-simulation-top-k", default=2, type=int, help="How many top design candidates to verify with FEBio.")
     parser.add_argument("--condition-concentration-fraction", default=None, type=float, help="Optional concentration hint (fraction form, e.g. 0.15) for condition-aware calibrated design priors.")
     parser.add_argument("--condition-curing-seconds", default=None, type=float, help="Optional curing time hint in seconds for condition-aware calibrated design priors.")
     parser.add_argument(
@@ -151,6 +174,12 @@ def main() -> None:
             simulation_crosslink_prob=args.simulation_crosslink_prob,
             simulation_domain_size=args.simulation_domain_size,
             target_stiffness=args.target_stiffness,
+            simulation_scenario=args.simulation_scenario,
+            simulation_request_json=args.simulation_request_json,
+            cell_contractility=args.cell_contractility,
+            organoid_radius=args.organoid_radius,
+            matrix_youngs_modulus=args.matrix_youngs_modulus,
+            matrix_poisson_ratio=args.matrix_poisson_ratio,
             target_anisotropy=args.target_anisotropy,
             target_connectivity=args.target_connectivity,
             target_stress_propagation=args.target_stress_propagation,
@@ -163,6 +192,9 @@ def main() -> None:
             design_top_k=args.design_top_k,
             design_candidate_budget=args.design_candidate_budget,
             design_monte_carlo_runs=args.design_monte_carlo_runs,
+            design_run_simulation=args.design_run_simulation,
+            design_simulation_scenario=args.design_simulation_scenario,
+            design_simulation_top_k=args.design_simulation_top_k,
             condition_concentration_fraction=args.condition_concentration_fraction,
             condition_curing_seconds=args.condition_curing_seconds,
             condition_overrides_json=args.condition_overrides_json,

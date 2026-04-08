@@ -607,13 +607,15 @@ def main() -> None:
     render_help_sidebar(config)
     hero(config)
 
-    tab_dashboard, tab_design, tab_console, tab_run, tab_demo, tab_reports, tab_library, tab_guide, tab_settings = st.tabs(
-        ["Dashboard", "Design Board", "Agent Console", "Research Run", "Demo", "Reports", "Library", "Guide", "Settings"]
+    tab_dashboard, tab_design, tab_simulation, tab_console, tab_run, tab_demo, tab_reports, tab_library, tab_guide, tab_settings = st.tabs(
+        ["Dashboard", "Design Board", "Simulation", "Agent Console", "Research Run", "Demo", "Reports", "Library", "Guide", "Settings"]
     )
     with tab_dashboard:
         render_dashboard_tab(config)
     with tab_design:
         render_design_board_tab(config)
+    with tab_simulation:
+        render_simulation_tab(config)
     with tab_console:
         render_console_tab(config)
     with tab_run:
@@ -725,6 +727,12 @@ def ensure_run_input_defaults(config: AppConfig) -> None:
         "run_simulation_bending_stiffness_input": 0.0,
         "run_simulation_crosslink_prob_input": 0.0,
         "run_simulation_domain_size_input": 0.0,
+        "run_simulation_scenario_input": "bulk_mechanics",
+        "run_simulation_request_json_input": "",
+        "run_cell_contractility_input": 0.02,
+        "run_organoid_radius_input": 0.18,
+        "run_matrix_youngs_modulus_input": 0.0,
+        "run_matrix_poisson_ratio_input": 0.3,
         "run_target_stiffness_input": 8.0,
         "run_campaign_target_stiffnesses_input": "6,8,10",
         "run_target_anisotropy_input": 0.1,
@@ -734,6 +742,9 @@ def ensure_run_input_defaults(config: AppConfig) -> None:
         "run_design_top_k_input": 3,
         "run_design_candidate_budget_input": 12,
         "run_design_monte_carlo_runs_input": 4,
+        "run_design_run_simulation_input": False,
+        "run_design_simulation_scenario_input": "bulk_mechanics",
+        "run_design_simulation_top_k_input": 2,
         "run_condition_concentration_input": 0.0,
         "run_condition_curing_input": 0.0,
         "run_condition_overrides_json_input": "",
@@ -1393,6 +1404,10 @@ def render_design_board_tab(config: AppConfig) -> None:
                     "target_connectivity",
                     "target_stress_propagation",
                     "feasible",
+                    "febio_status",
+                    "febio_scenario",
+                    "febio_best_candidate",
+                    "febio_best_score",
                     "calibration_prior_level",
                     "calibration_concentration",
                     "calibration_curing",
@@ -1515,6 +1530,22 @@ def render_design_board_tab(config: AppConfig) -> None:
                 with st.expander("Raw Candidate Payload", expanded=False):
                     st.code(json.dumps(best_candidate, ensure_ascii=False, indent=2), language="json")
 
+            design_simulation = snapshot.get("design_simulation", {}) if isinstance(snapshot.get("design_simulation"), dict) else {}
+            if design_simulation:
+                st.markdown("### FEBio Verification")
+                render_mapping_table(
+                    {
+                        "status": design_simulation.get("status", "NR"),
+                        "scenario": design_simulation.get("scenario", "NR"),
+                        "reason": design_simulation.get("reason", "NR"),
+                    },
+                    order=["status", "scenario", "reason"],
+                )
+                ranking = design_simulation.get("comparison", {}).get("ranking", []) if isinstance(design_simulation.get("comparison"), dict) else []
+                if ranking:
+                    st.markdown("#### FEBio Ranking")
+                    st.dataframe(ranking[:3], width="stretch", hide_index=True)
+
             stage_map = design_stage_files(run_dir)
             if stage_map:
                 st.markdown("### Design Stage Viewer")
@@ -1527,6 +1558,142 @@ def render_design_board_tab(config: AppConfig) -> None:
                 stage_path = stage_map[stage_name]
                 st.caption(str(stage_path))
                 render_artifact_file(stage_path, key=f"design_artifact_{run_dir.name}_{stage_name}")
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def render_simulation_tab(config: AppConfig) -> None:
+    ensure_run_input_defaults(config)
+    st.markdown('<div class="panel-card">', unsafe_allow_html=True)
+    st.subheader("Simulation")
+    st.caption("这个页面专门用于运行固定场景 FEBio simulation，并检查结构化指标、原始工件和失败信息。")
+
+    left, right = st.columns([0.9, 1.1], gap="large")
+    with left:
+        st.markdown("### Run Scenario")
+        st.selectbox(
+            "Scenario",
+            ["bulk_mechanics", "single_cell_contraction", "organoid_spheroid"],
+            key="run_simulation_scenario_input",
+        )
+        st.number_input("Target stiffness", min_value=0.0, key="run_target_stiffness_input")
+        st.number_input("Matrix Young's modulus", min_value=0.0, key="run_matrix_youngs_modulus_input")
+        st.number_input("Matrix Poisson ratio", min_value=0.0, max_value=0.49, key="run_matrix_poisson_ratio_input")
+        st.number_input("Cell contractility", min_value=0.0, key="run_cell_contractility_input")
+        st.number_input("Organoid radius", min_value=0.0, key="run_organoid_radius_input")
+        st.text_area(
+            "Scenario request JSON",
+            key="run_simulation_request_json_input",
+            help="只接受固定 schema 可识别的字段，例如 sample_dimensions、cell_radius、organoid_radial_displacement 等。",
+        )
+        st.caption(f"FEBio status: {config.febio_status_message}")
+        if st.button("Run Simulation", use_container_width=True, key="run_simulation_tab_button"):
+            run_workflow(
+                config=config,
+                query=f"Simulation | {st.session_state.get('run_simulation_scenario_input', 'bulk_mechanics')}",
+                workflow="simulation",
+                report_name=str(st.session_state.get("run_report_name_input", "simulation_report.md")) or "simulation_report.md",
+                report_dir=Path(str(st.session_state.get("run_report_dir_input", config.report_dir))).expanduser(),
+                library_dir=config.library_dir,
+                max_pubmed_results=int(st.session_state.get("run_max_pubmed_results", config.max_pubmed_results)),
+                data_path=None,
+                experiment_type="auto",
+                time_column="time",
+                stress_column="stress",
+                strain_column="strain",
+                applied_stress=None,
+                applied_strain=None,
+                delimiter=",",
+                simulation_fiber_density=None,
+                simulation_fiber_stiffness=None,
+                simulation_bending_stiffness=None,
+                simulation_crosslink_prob=None,
+                simulation_domain_size=None,
+                target_stiffness=float(st.session_state.get("run_target_stiffness_input", 0.0)) or None,
+                simulation_scenario=str(st.session_state.get("run_simulation_scenario_input", "bulk_mechanics")),
+                simulation_request_json=str(st.session_state.get("run_simulation_request_json_input", "")),
+                cell_contractility=float(st.session_state.get("run_cell_contractility_input", 0.0)) or None,
+                organoid_radius=float(st.session_state.get("run_organoid_radius_input", 0.0)) or None,
+                matrix_youngs_modulus=float(st.session_state.get("run_matrix_youngs_modulus_input", 0.0)) or None,
+                matrix_poisson_ratio=float(st.session_state.get("run_matrix_poisson_ratio_input", 0.3)),
+                target_anisotropy=0.1,
+                target_connectivity=0.95,
+                target_stress_propagation=0.5,
+                design_extra_targets_json="",
+                constraint_max_anisotropy=None,
+                constraint_min_connectivity=None,
+                constraint_max_risk_index=None,
+                constraint_min_stress_propagation=None,
+                design_extra_constraints_json="",
+                design_top_k=3,
+                design_candidate_budget=12,
+                design_monte_carlo_runs=4,
+                design_run_simulation=False,
+                design_simulation_scenario="bulk_mechanics",
+                design_simulation_top_k=1,
+                condition_concentration_fraction=None,
+                condition_curing_seconds=None,
+                condition_overrides_json="",
+                campaign_target_stiffnesses="",
+                dataset_id=None,
+                calibration_max_samples=6,
+            )
+
+        st.markdown("### Run Progress")
+        events: List[Tuple[str, str]] = st.session_state.get("run_events", [])
+        if events:
+            st.markdown(render_stage_lines(events), unsafe_allow_html=True)
+        else:
+            st.caption("点击运行后，这里会显示构建 request、运行 FEBio 和写报告的进度。")
+
+    with right:
+        st.markdown("### Latest Simulation Runs")
+        options = simulation_run_options(config)
+        if not options:
+            st.info("还没有 simulation workflow 的 run。")
+        else:
+            labels = [label for label, _ in options]
+            choice = st.selectbox("Select Simulation Run", labels, index=0, key="simulation_run_select")
+            run_dir = dict(options)[choice]
+            summary = simulation_run_summary(run_dir)
+            snapshot = simulation_run_snapshot(run_dir)
+            render_mapping_table(
+                summary,
+                order=[
+                    "scenario",
+                    "status",
+                    "effective_stiffness",
+                    "peak_stress",
+                    "stress_propagation_distance",
+                    "strain_heterogeneity",
+                    "interface_deformation",
+                    "candidate_suitability_score",
+                ],
+            )
+            metrics_payload = snapshot.get("metrics_payload", {}) if isinstance(snapshot.get("metrics_payload"), dict) else {}
+            if metrics_payload:
+                st.markdown("#### Structured Metrics")
+                render_mapping_table(metrics_payload)
+            final_summary_path = Path(str(snapshot.get("final_summary_path", ""))) if snapshot.get("final_summary_path") else None
+            if final_summary_path and final_summary_path.exists():
+                with st.expander("Final Summary", expanded=False):
+                    render_artifact_file(final_summary_path, key=f"simulation_summary_{run_dir.name}")
+            simulation_dir = Path(str(snapshot.get("simulation_dir", ""))) if snapshot.get("simulation_dir") else None
+            if simulation_dir and simulation_dir.exists():
+                artifact_map = {
+                    path.name: path
+                    for path in sorted(simulation_dir.iterdir())
+                    if path.is_file()
+                }
+                if artifact_map:
+                    st.markdown("#### Simulation Artifacts")
+                    artifact_name = st.selectbox(
+                        "Artifact",
+                        list(artifact_map.keys()),
+                        index=0,
+                        key=f"simulation_artifact_{run_dir.name}",
+                    )
+                    render_artifact_file(artifact_map[artifact_name], key=f"simulation_artifact_view_{run_dir.name}")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -1605,6 +1772,7 @@ def render_run_tab(config: AppConfig) -> None:
     workflow_options = list(workflow_specs().keys())
     literature_workflows = {"team", "single", "hybrid"}
     mechanics_workflows = {"mechanics", "hybrid"}
+    febio_workflows = {"simulation"}
     design_workflows = {"design", "design_campaign"}
     data_workflows = {"datasets", "calibration"}
 
@@ -1713,6 +1881,30 @@ def render_run_tab(config: AppConfig) -> None:
                 st.number_input("Crosslink Prob Override", key="run_simulation_crosslink_prob_input")
                 st.number_input("Domain Size Override", key="run_simulation_domain_size_input")
 
+        if workflow in febio_workflows:
+            st.markdown("### FEBio Simulation Request")
+            s1, s2 = st.columns(2, gap="large")
+            with s1:
+                st.selectbox(
+                    "Simulation scenario",
+                    ["bulk_mechanics", "single_cell_contraction", "organoid_spheroid"],
+                    key="run_simulation_scenario_input",
+                )
+                st.number_input("Matrix Young's modulus", min_value=0.0, key="run_matrix_youngs_modulus_input")
+                st.number_input("Matrix Poisson ratio", min_value=0.0, max_value=0.49, key="run_matrix_poisson_ratio_input")
+                st.number_input("Target stiffness", min_value=0.0, key="run_target_stiffness_input")
+            with s2:
+                st.number_input("Cell contractility", min_value=0.0, key="run_cell_contractility_input")
+                st.number_input("Organoid radius", min_value=0.0, key="run_organoid_radius_input")
+                st.caption(
+                    f"FEBio status: {'configured' if config.febio_executable else 'unavailable'} | {config.febio_status_message}"
+                )
+            st.text_area(
+                "Scenario request JSON",
+                key="run_simulation_request_json_input",
+                help="可选 JSON，用于补充固定 schema 字段，例如 bulk 的 sample_dimensions 或 spheroid 的 organoid_radial_displacement。",
+            )
+
         if workflow in design_workflows:
             st.markdown("### Design Targets")
             g1, g2 = st.columns(2, gap="large")
@@ -1769,6 +1961,24 @@ def render_run_tab(config: AppConfig) -> None:
                 key="run_design_extra_constraints_json_input",
                 help="可选 JSON 对象，例如 {\"max_loss_tangent_proxy\": 0.8, \"min_permeability_proxy\": 0.01}。",
             )
+
+            st.markdown("### FEBio Verification")
+            st.checkbox(
+                "Run FEBio on top candidates",
+                key="run_design_run_simulation_input",
+                help="启用后会对 top-k design candidates 运行固定 FEBio 场景验证；若未安装 FEBio，会自动降级为仅 mechanics-informed 设计。",
+            )
+            sim1, sim2 = st.columns(2, gap="large")
+            with sim1:
+                st.selectbox(
+                    "Design simulation scenario",
+                    ["bulk_mechanics", "single_cell_contraction", "organoid_spheroid"],
+                    key="run_design_simulation_scenario_input",
+                )
+                st.number_input("Design simulation top-k", min_value=1, step=1, key="run_design_simulation_top_k_input")
+            with sim2:
+                st.number_input("Cell contractility", min_value=0.0, key="run_cell_contractility_input")
+                st.number_input("Organoid radius", min_value=0.0, key="run_organoid_radius_input")
 
         if workflow in data_workflows:
             st.markdown("### Data Pipeline Inputs")
@@ -1829,6 +2039,12 @@ def render_run_tab(config: AppConfig) -> None:
                     simulation_crosslink_prob=float(st.session_state.get("run_simulation_crosslink_prob_input", 0.0)) or None,
                     simulation_domain_size=float(st.session_state.get("run_simulation_domain_size_input", 0.0)) or None,
                     target_stiffness=float(st.session_state.get("run_target_stiffness_input", 0.0)) or None,
+                    simulation_scenario=str(st.session_state.get("run_simulation_scenario_input", "bulk_mechanics")),
+                    simulation_request_json=str(st.session_state.get("run_simulation_request_json_input", "")),
+                    cell_contractility=float(st.session_state.get("run_cell_contractility_input", 0.0)) or None,
+                    organoid_radius=float(st.session_state.get("run_organoid_radius_input", 0.0)) or None,
+                    matrix_youngs_modulus=float(st.session_state.get("run_matrix_youngs_modulus_input", 0.0)) or None,
+                    matrix_poisson_ratio=float(st.session_state.get("run_matrix_poisson_ratio_input", 0.3)),
                     target_anisotropy=float(st.session_state.get("run_target_anisotropy_input", 0.1)),
                     target_connectivity=float(st.session_state.get("run_target_connectivity_input", 0.95)),
                     target_stress_propagation=float(st.session_state.get("run_target_stress_propagation_input", 0.5)),
@@ -1841,6 +2057,9 @@ def render_run_tab(config: AppConfig) -> None:
                     design_top_k=int(st.session_state.get("run_design_top_k_input", 3)),
                     design_candidate_budget=int(st.session_state.get("run_design_candidate_budget_input", 12)),
                     design_monte_carlo_runs=int(st.session_state.get("run_design_monte_carlo_runs_input", 4)),
+                    design_run_simulation=bool(st.session_state.get("run_design_run_simulation_input", False)),
+                    design_simulation_scenario=str(st.session_state.get("run_design_simulation_scenario_input", "bulk_mechanics")),
+                    design_simulation_top_k=int(st.session_state.get("run_design_simulation_top_k_input", 2)),
                     condition_concentration_fraction=float(st.session_state.get("run_condition_concentration_input", 0.0)) or None,
                     condition_curing_seconds=float(st.session_state.get("run_condition_curing_input", 0.0)) or None,
                     condition_overrides_json=str(st.session_state.get("run_condition_overrides_json_input", "")),
@@ -1904,6 +2123,12 @@ def run_workflow(
     simulation_crosslink_prob: float | None,
     simulation_domain_size: float | None,
     target_stiffness: float | None,
+    simulation_scenario: str,
+    simulation_request_json: str,
+    cell_contractility: float | None,
+    organoid_radius: float | None,
+    matrix_youngs_modulus: float | None,
+    matrix_poisson_ratio: float | None,
     target_anisotropy: float,
     target_connectivity: float,
     target_stress_propagation: float,
@@ -1916,6 +2141,9 @@ def run_workflow(
     design_top_k: int,
     design_candidate_budget: int,
     design_monte_carlo_runs: int,
+    design_run_simulation: bool,
+    design_simulation_scenario: str,
+    design_simulation_top_k: int,
     condition_concentration_fraction: float | None,
     condition_curing_seconds: float | None,
     condition_overrides_json: str,
@@ -1955,6 +2183,12 @@ def run_workflow(
             simulation_crosslink_prob=simulation_crosslink_prob,
             simulation_domain_size=simulation_domain_size,
             target_stiffness=target_stiffness,
+            simulation_scenario=simulation_scenario,
+            simulation_request_json=simulation_request_json,
+            cell_contractility=cell_contractility,
+            organoid_radius=organoid_radius,
+            matrix_youngs_modulus=matrix_youngs_modulus,
+            matrix_poisson_ratio=matrix_poisson_ratio,
             target_anisotropy=target_anisotropy,
             target_connectivity=target_connectivity,
             target_stress_propagation=target_stress_propagation,
@@ -1967,6 +2201,9 @@ def run_workflow(
             design_top_k=design_top_k,
             design_candidate_budget=design_candidate_budget,
             design_monte_carlo_runs=design_monte_carlo_runs,
+            design_run_simulation=design_run_simulation,
+            design_simulation_scenario=design_simulation_scenario,
+            design_simulation_top_k=design_simulation_top_k,
             condition_concentration_fraction=condition_concentration_fraction,
             condition_curing_seconds=condition_curing_seconds,
             condition_overrides_json=condition_overrides_json,
@@ -2185,6 +2422,8 @@ def benchmark_demo_rows(run_dir: Path) -> List[Dict[str, Any]]:
         {"metric": "inverse_design_mean_abs_error", "value": format_display_value(summary.get("inverse_design_mean_abs_error"))},
         {"metric": "identifiability_risk", "value": format_display_value(summary.get("identifiability_risk"))},
         {"metric": "fit_mean_relative_error", "value": format_display_value(summary.get("fit_mean_relative_error"))},
+        {"metric": "simulation_smoke_status", "value": format_display_value(summary.get("simulation_smoke_status"))},
+        {"metric": "simulation_smoke_pass", "value": format_display_value(summary.get("simulation_smoke_pass"))},
         {"metric": "calibration_design_improvement", "value": format_display_value(summary.get("calibration_design_improvement"))},
         {"metric": "calibration_cached_from_run", "value": format_display_value(summary.get("calibration_cached_from_run"))},
         {"metric": "calibration_routing_modes", "value": format_display_value(summary.get("calibration_routing_modes"))},
@@ -2764,6 +3003,8 @@ def render_settings_tab(config: AppConfig) -> None:
         {"item": "Runs Dir", "value": str(config.runs_dir)},
         {"item": "Cache Dir", "value": str(config.cache_dir)},
         {"item": "Library Dir", "value": str(config.library_dir)},
+        {"item": "FEBio", "value": config.febio_executable or "Unavailable"},
+        {"item": "FEBio Status", "value": config.febio_status_message},
         {"item": "Login Protection", "value": "Enabled" if config.frontend_require_login else "Disabled"},
         {"item": "Current User", "value": st.session_state.get("auth_user") or "Anonymous"},
         {"item": "Public Host", "value": config.frontend_public_host},
@@ -2806,8 +3047,8 @@ def system_layer_rows() -> List[Dict[str, str]]:
         },
         {
             "layer": "Scientific Engines",
-            "role": "力学拟合、纤维网络模拟、逆向设计、配方映射和实验校准等确定性核心。",
-            "modules": "mechanics.py, fiber_network.py, formulation.py, calibration.py",
+            "role": "力学拟合、纤维网络模拟、FEBio 场景仿真、逆向设计、配方映射和实验校准等确定性核心。",
+            "modules": "mechanics.py, fiber_network.py, febio/, formulation.py, calibration.py",
         },
         {
             "layer": "Evidence And Data",
@@ -2847,12 +3088,19 @@ def workflow_specs() -> Dict[str, Dict[str, object]]:
             "requires": "研究问题、力学数据，以及可选 simulation override。",
             "writes": ["planner_agent", "search_agent", "evidence_agent", "hypothesis_agent", "mechanics_agent", "simulation_agent", "critic_agent", "final_summary"],
         },
+        "simulation": {
+            "category": "Biomechanics Simulation",
+            "headline": "固定场景 FEBio 仿真评估",
+            "when_to_use": "需要把候选 ECM 参数送入固定 FEBio 模板，得到结构化仿真指标时。",
+            "requires": "simulation scenario，以及矩阵模量/收缩/球体半径等结构化参数。",
+            "writes": ["simulation_agent", "simulation/final_summary", "simulation/simulation_result", "simulation/simulation_metrics", "final_summary"],
+        },
         "design": {
             "category": "Inverse Design",
             "headline": "单目标 ECM 逆向设计",
-            "when_to_use": "已经知道目标 stiffness window，想拿到 top-k 候选和配方模板时。",
-            "requires": "目标 stiffness / anisotropy / connectivity / stress propagation 与约束。",
-            "writes": ["design_validation", "design_agent", "design_sensitivity", "formulation_mapping", "design_summary", "final_summary"],
+            "when_to_use": "已经知道目标 stiffness window，想拿到 top-k 候选、配方模板，并可选叠加 FEBio 验证时。",
+            "requires": "目标 stiffness / anisotropy / connectivity / stress propagation 与约束；可选 FEBio scenario。",
+            "writes": ["design_validation", "design_agent", "design_sensitivity", "design_simulation", "formulation_mapping", "design_summary", "final_summary"],
         },
         "design_campaign": {
             "category": "Inverse Design",
@@ -2866,7 +3114,7 @@ def workflow_specs() -> Dict[str, Dict[str, object]]:
             "headline": "数值与设计核心基准测试",
             "when_to_use": "要检验 solver、scaling、inverse design 和 fit 核心表现时。",
             "requires": "benchmark 主题描述即可。",
-            "writes": ["benchmark_solver", "benchmark_load_ladder", "benchmark_scaling", "benchmark_design", "benchmark_repeatability", "benchmark_identifiability", "benchmark_fit", "benchmark_calibration_design", "benchmark_summary", "final_summary"],
+            "writes": ["benchmark_solver", "benchmark_load_ladder", "benchmark_scaling", "benchmark_design", "benchmark_repeatability", "benchmark_identifiability", "benchmark_fit", "benchmark_simulation_smoke", "benchmark_calibration_design", "benchmark_summary", "final_summary"],
         },
         "datasets": {
             "category": "Data Pipeline",
@@ -2974,8 +3222,8 @@ def workflow_category_rows() -> List[Dict[str, str]]:
         },
         {
             "category": "Modeling",
-            "workflows": "mechanics, hybrid",
-            "description": "把实验力学、模拟和工程解释串起来，形成机制层判断。",
+            "workflows": "mechanics, hybrid, simulation",
+            "description": "把实验力学、网络模拟、FEBio 场景仿真和工程解释串起来，形成机制层判断。",
         },
         {
             "category": "Design",
@@ -3000,9 +3248,9 @@ def workflow_flow_family_specs() -> List[Dict[str, str]]:
         },
         {
             "family": "Modeling",
-            "workflows": "mechanics / hybrid",
-            "summary": "把实验力学拟合、网络模拟和工程解释串成机制层报告。",
-            "stages": "mechanics: planner -> fit -> critic -> writer | hybrid: planner -> search -> evidence -> hypothesis -> mechanics -> simulation -> critic -> writer",
+            "workflows": "mechanics / hybrid / simulation",
+            "summary": "把实验力学拟合、网络模拟、FEBio 固定场景验证和工程解释串成机制层报告。",
+            "stages": "mechanics: planner -> fit -> critic -> writer | hybrid: planner -> search -> evidence -> hypothesis -> mechanics -> simulation -> critic -> writer | simulation: request -> FEBio run -> parse -> metrics -> report",
         },
         {
             "family": "Design",
@@ -3039,10 +3287,10 @@ digraph ECMFlow {
   entry [label="Entry Surfaces\\nResearch Run | Demo | CLI | Desktop", fillcolor="#eef6ff"];
   inputs [label="Research Inputs\\nquery | mechanics file | target window\\ndataset_id | library | memory", fillcolor="#f7fbff"];
   runner [label="Workflow Router\\nrun_research_agent\\ncreate run_dir + metadata + progress", fillcolor="#eef6ff"];
-  engines [label="Tools + Engines\\nsearch | datasets | calibration\\nmechanics | fiber network | formulation", fillcolor="#f7fbff"];
+  engines [label="Tools + Engines\\nsearch | datasets | calibration\\nmechanics | fiber network | FEBio | formulation", fillcolor="#f7fbff"];
 
   evidence [label="Evidence\\nteam / single\\nsearch -> evidence -> hypothesis -> writer", fillcolor="#ffffff"];
-  modeling [label="Modeling\\nmechanics / hybrid\\nfit -> simulation -> interpretation", fillcolor="#ffffff"];
+  modeling [label="Modeling\\nmechanics / hybrid / simulation\\nfit -> simulation -> interpretation", fillcolor="#ffffff"];
   design [label="Design\\ndesign / design_campaign\\nvalidation -> search -> formulation", fillcolor="#ffffff"];
   datacore [label="Data & Core\\ndatasets / calibration / benchmark\\nnormalize -> priors -> QA", fillcolor="#ffffff"];
 
@@ -3158,6 +3406,28 @@ def quickstart_markdown() -> str:
 
 def workflow_examples() -> Dict[str, Dict[str, object]]:
     return {
+        "simulation": {
+            "title": "FEBio bulk mechanics verification",
+            "inputs": [
+                {"field": "workflow", "value": "simulation"},
+                {"field": "scenario", "value": "bulk_mechanics"},
+                {"field": "matrix modulus", "value": "8 Pa"},
+                {"field": "target stiffness", "value": "8 Pa"},
+            ],
+            "steps": [
+                "先把 CLI / UI 输入约束成固定 schema request。",
+                "用模板 + 参数注入生成 `input.feb`，禁止任意 XML。",
+                "运行 FEBio，并解析位移/反力/主应力输出。",
+                "写出 `simulation_result.json`、`simulation_metrics.json` 和最终 Markdown 报告。",
+            ],
+            "outputs": [
+                "simulation/input_request.json",
+                "simulation/input.feb",
+                "simulation/simulation_result.json",
+                "simulation/simulation_metrics.json",
+                "reports/febio_simulation_report.md",
+            ],
+        },
         "design_campaign": {
             "title": "GelMA-like campaign across 6 / 8 / 10 Pa",
             "inputs": [
@@ -3430,10 +3700,10 @@ def agent_capability_rows() -> List[Dict[str, str]]:
         },
         {
             "agent": "SimulationAgent",
-            "role": "网络模拟",
-            "inputs": "材料假设 + mechanics 结果 + simulation params",
-            "outputs": "stiffness_mean / anisotropy / connectivity / stress_propagation / sensitivity scan",
-            "tools": "run_fiber_network_simulation, run_fiber_network_parameter_scan",
+            "role": "网络模拟与 FEBio 仿真",
+            "inputs": "材料假设 + mechanics 结果 + simulation params 或固定 FEBio scenario request",
+            "outputs": "fiber-network features 或 FEBio metrics / warnings / structured artifacts",
+            "tools": "run_fiber_network_simulation, run_fiber_network_parameter_scan, build_febio_simulation_request, run_febio_simulation",
         },
         {
             "agent": "DesignAgent",
@@ -3529,6 +3799,15 @@ def design_campaign_run_options(config: AppConfig) -> List[Tuple[str, Path]]:
     return options
 
 
+def simulation_run_options(config: AppConfig) -> List[Tuple[str, Path]]:
+    options = []
+    for label, run_dir in recent_run_options(config):
+        metadata = load_json_file(run_dir / "metadata.json")
+        if metadata.get("workflow") == "simulation":
+            options.append((label, run_dir))
+    return options
+
+
 def render_run_inspector(run_dir: Path) -> None:
     metadata = load_json_file(run_dir / "metadata.json")
     if metadata:
@@ -3570,6 +3849,7 @@ def design_run_snapshot(run_dir: Path) -> Dict[str, Dict]:
             "design_assessment": summary_payload.get("design_assessment", {}) if isinstance(summary_payload, dict) else {},
             "validation_payload": summary_payload.get("validation_payload", {}) if isinstance(summary_payload, dict) else {},
             "scan_payload": summary_payload.get("sensitivity_payload", {}) if isinstance(summary_payload, dict) else {},
+            "design_simulation": summary_payload.get("design_simulation", {}) if isinstance(summary_payload, dict) else {},
             "targets": summary_payload.get("targets", {}) if isinstance(summary_payload, dict) else {},
             "constraints": summary_payload.get("constraints", {}) if isinstance(summary_payload, dict) else {},
             "calibration_context": summary_payload.get("calibration_context", {}) if isinstance(summary_payload, dict) else {},
@@ -3586,6 +3866,7 @@ def design_run_snapshot(run_dir: Path) -> Dict[str, Dict]:
         "design_assessment": {},
         "validation_payload": validation_payload,
         "scan_payload": scan_payload,
+        "design_simulation": {},
         "targets": design_payload.get("targets", {}) if isinstance(design_payload, dict) else {},
         "constraints": design_payload.get("constraints", {}) if isinstance(design_payload, dict) else {},
         "calibration_context": {},
@@ -3595,11 +3876,46 @@ def design_run_snapshot(run_dir: Path) -> Dict[str, Dict]:
     }
 
 
+def simulation_run_snapshot(run_dir: Path) -> Dict[str, object]:
+    simulation_dir = run_dir / "simulation"
+    return {
+        "request_payload": load_json_file(simulation_dir / "input_request.json"),
+        "result_payload": load_json_file(simulation_dir / "simulation_result.json"),
+        "metrics_payload": load_json_file(simulation_dir / "simulation_metrics.json"),
+        "runner_payload": load_json_file(simulation_dir / "runner_metadata.json"),
+        "final_summary_path": str(simulation_dir / "final_summary.md") if (simulation_dir / "final_summary.md").exists() else "",
+        "simulation_dir": str(simulation_dir) if simulation_dir.exists() else "",
+    }
+
+
 def design_campaign_snapshot(run_dir: Path) -> Dict[str, object]:
     summary_path = run_dir / "campaign_summary.json"
     if summary_path.exists():
         return load_json_file(summary_path)
     return {}
+
+
+def simulation_run_summary(run_dir: Path) -> Dict[str, object]:
+    snapshot = simulation_run_snapshot(run_dir)
+    request = snapshot.get("request_payload", {}) if isinstance(snapshot.get("request_payload"), dict) else {}
+    result = snapshot.get("result_payload", {}) if isinstance(snapshot.get("result_payload"), dict) else {}
+    metrics = snapshot.get("metrics_payload", {}) if isinstance(snapshot.get("metrics_payload"), dict) else {}
+    return {
+        "run": run_dir.name,
+        "scenario": request.get("scenario", "NR"),
+        "status": metrics.get("status", result.get("status", "NR")),
+        "effective_stiffness": metrics.get("effective_stiffness", "NR"),
+        "peak_stress": metrics.get("peak_stress", "NR"),
+        "peak_matrix_stress": metrics.get("peak_matrix_stress", "NR"),
+        "stress_propagation_distance": metrics.get("stress_propagation_distance", "NR"),
+        "strain_heterogeneity": metrics.get("strain_heterogeneity", "NR"),
+        "interface_deformation": metrics.get("interface_deformation", "NR"),
+        "candidate_suitability_score": (
+            metrics.get("candidate_suitability_score_components", {}).get("suitability_score", "NR")
+            if isinstance(metrics.get("candidate_suitability_score_components"), dict)
+            else "NR"
+        ),
+    }
 
 
 def design_run_summary(run_dir: Path) -> Dict[str, object]:
@@ -3620,6 +3936,9 @@ def design_run_summary(run_dir: Path) -> Dict[str, object]:
     assessment_metrics = assessment.get("metrics", {}) if isinstance(assessment.get("metrics"), dict) else {}
     requested_condition_overrides = snapshot.get("requested_condition_overrides", {}) if isinstance(snapshot.get("requested_condition_overrides"), dict) else {}
     predicted_material_observables = snapshot.get("predicted_material_observables", {}) if isinstance(snapshot.get("predicted_material_observables"), dict) else {}
+    design_simulation = snapshot.get("design_simulation", {}) if isinstance(snapshot.get("design_simulation"), dict) else {}
+    simulation_comparison = design_simulation.get("comparison", {}) if isinstance(design_simulation.get("comparison"), dict) else {}
+    simulation_best = simulation_comparison.get("best_candidate", {}) if isinstance(simulation_comparison, dict) else {}
 
     stiffness_mean = float(best_features.get("stiffness_mean", 0.0))
     target_stiffness = float(targets.get("stiffness", 0.0)) if "stiffness" in targets else 0.0
@@ -3646,6 +3965,10 @@ def design_run_summary(run_dir: Path) -> Dict[str, object]:
         "constraint_min_connectivity": round(float(constraints.get("min_connectivity", 0.0)), 4) if "min_connectivity" in constraints else "NR",
         "constraint_max_risk_index": round(float(constraints.get("max_risk_index", 0.0)), 4) if "max_risk_index" in constraints else "NR",
         "top_candidate_score": round(float(best_candidate.get("score", 0.0)), 4) if best_candidate else "NR",
+        "febio_status": design_simulation.get("status", "NR") if design_simulation else "NR",
+        "febio_scenario": design_simulation.get("scenario", "NR") if design_simulation else "NR",
+        "febio_best_candidate": simulation_best.get("candidate_id", "NR") if simulation_best else "NR",
+        "febio_best_score": round(float(simulation_best.get("comparison_score", 0.0)), 4) if simulation_best else "NR",
         "best_material_family": primary_formulation.get("material_family", "NR") if primary_formulation else "NR",
         "best_crosslinking_strategy": primary_formulation.get("crosslinking_strategy", "NR") if primary_formulation else "NR",
         "best_fiber_density": round(float(best_params.get("fiber_density", 0.0)), 4) if best_params else "NR",
@@ -4000,10 +4323,25 @@ def render_run_simulation_summary(run_dir: Path) -> None:
     tool_rows = read_jsonl(run_dir / "tool_calls.jsonl")
     baseline = latest_tool_result(tool_rows, "run_fiber_network_simulation")
     scan = latest_tool_result(tool_rows, "run_fiber_network_parameter_scan")
-    if not baseline and not scan:
+    febio = latest_tool_result(tool_rows, "run_febio_simulation")
+    if not baseline and not scan and not febio:
         return
 
     st.markdown("### Simulation Summary")
+    if febio:
+        metrics = febio.get("simulation_metrics", {}) if isinstance(febio.get("simulation_metrics"), dict) else {}
+        febio_metrics = [
+            {"metric": key, "value": metrics.get(key, "NR")}
+            for key in [
+                "effective_stiffness",
+                "peak_stress",
+                "displacement_decay_length",
+                "strain_heterogeneity",
+                "target_mismatch_score",
+            ]
+        ]
+        st.caption("FEBio")
+        st.dataframe(febio_metrics, use_container_width=True, hide_index=True)
     if baseline:
         baseline_metrics = [
             {

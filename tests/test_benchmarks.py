@@ -12,6 +12,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from ecm_organoid_agent.benchmarks import (
     run_calibration_design_benchmark,
+    run_febio_simulation_smoke_benchmark,
     run_inverse_design_benchmark,
     run_inverse_design_repeatability_benchmark,
     run_identifiability_proxy_benchmark,
@@ -156,6 +157,20 @@ class MechanicsBenchmarkTests(unittest.TestCase):
             self.assertEqual(payload["summary"]["cached_from_run"], "20260401_cached_calibration")
             self.assertEqual(payload["summary"]["mean_combined_error_improvement"], 0.2)
 
+    def test_febio_simulation_smoke_benchmark_degrades_when_unavailable(self) -> None:
+        with patch("ecm_organoid_agent.benchmarks.FEBioConfig.from_env") as mock_from_env:
+            mock_from_env.return_value = type(
+                "Cfg",
+                (),
+                {
+                    "available": False,
+                    "status_message": "FEBio unavailable in CI.",
+                },
+            )()
+            payload = run_febio_simulation_smoke_benchmark(project_dir=PROJECT_ROOT)
+        self.assertFalse(payload["summary"]["available"])
+        self.assertEqual(payload["summary"]["status"], "unavailable")
+
     def test_mechanics_benchmark_suite_returns_overall_summary(self) -> None:
         fake_payload = {"summary": {"overall_pass": True}}
         with patch("ecm_organoid_agent.benchmarks.run_solver_benchmark", return_value={"summary": {"overall_pass": True, "pass_rate": 1.0}}), patch(
@@ -178,6 +193,9 @@ class MechanicsBenchmarkTests(unittest.TestCase):
             "ecm_organoid_agent.benchmarks.run_mechanics_fit_benchmark",
             return_value={"summary": {"overall_pass": True, "mean_relative_error": 0.01}},
         ), patch(
+            "ecm_organoid_agent.benchmarks.run_febio_simulation_smoke_benchmark",
+            return_value={"summary": {"available": False, "status": "unavailable", "overall_pass": False, "effective_stiffness": None, "target_mismatch_score": None}},
+        ), patch(
             "ecm_organoid_agent.benchmarks.run_calibration_design_benchmark",
             return_value={"summary": {"available": False, "overall_pass": False, "mean_combined_error_improvement": 0.0}},
         ):
@@ -191,9 +209,11 @@ class MechanicsBenchmarkTests(unittest.TestCase):
             self.assertIn("repeatability_benchmark", payload)
             self.assertIn("identifiability_proxy_benchmark", payload)
             self.assertIn("mechanics_fit_benchmark", payload)
+            self.assertIn("simulation_smoke_benchmark", payload)
             self.assertIn("calibration_design_benchmark", payload)
             self.assertIn("calibration_design_improvement", payload["summary"])
             self.assertIn("property_target_mean_error", payload["summary"])
+            self.assertIn("simulation_smoke_status", payload["summary"])
             self.assertFalse(payload["summary"]["calibration_benchmark_available"])
             self.assertIn("overall_pass", payload["summary"])
 

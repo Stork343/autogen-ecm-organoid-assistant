@@ -5,12 +5,25 @@ import hashlib
 import json
 import re
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 from xml.etree import ElementTree as ET
 
 from .artifacts import append_jsonl, utc_now_iso
 from .config import AppConfig
+from .febio import (
+    FEBioConfig,
+    CandidateSimulationMappingOptions,
+    BulkMechanicsRequest,
+    OrganoidSpheroidRequest,
+    SingleCellContractionRequest,
+    candidate_to_simulation_request,
+    compare_simulation_candidates_payloads,
+    run_simulation_request,
+    simulation_request_from_dict,
+    simulation_request_from_json,
+)
 from .fiber_network import (
     design_ecm_candidates as design_fiber_network_candidates_backend,
     run_parameter_scan as run_fiber_network_parameter_scan_backend,
@@ -36,6 +49,17 @@ SECTION_STOP_PATTERNS = [
     re.compile(r"^(introduction|background|methods?|materials? and methods?)\b", re.IGNORECASE),
     re.compile(r"^\d+(\.\d+)*\s+(introduction|background|methods?|results?|discussion)\b", re.IGNORECASE),
 ]
+
+
+def _febio_config_from_app(config: AppConfig) -> FEBioConfig:
+    return FEBioConfig(
+        enabled=config.febio_enabled,
+        executable=config.febio_executable,
+        timeout_seconds=config.febio_timeout_seconds,
+        default_tmp_dir=config.febio_default_tmp_dir or (config.project_dir / ".cache" / "febio_tmp"),
+        available=bool(config.febio_enabled and config.febio_executable),
+        status_message=config.febio_status_message,
+    )
 
 
 def normalize_query_terms(query: str) -> List[str]:
@@ -1002,6 +1026,213 @@ def build_tools(config: AppConfig):
             )
             return result
 
+    def build_febio_simulation_request(
+        scenario: str,
+        simulation_request_json: str = "",
+        target_stiffness: float = 0.0,
+        cell_contractility: float = 0.0,
+        organoid_radius: float = 0.0,
+        matrix_youngs_modulus: float = 0.0,
+        matrix_poisson_ratio: float = 0.3,
+        design_candidate_json: str = "",
+    ) -> str:
+        """Build and validate a constrained FEBio simulation request without exposing raw XML generation."""
+
+        arguments = {
+            "scenario": scenario,
+            "has_request_json": bool(simulation_request_json.strip()),
+            "has_design_candidate_json": bool(design_candidate_json.strip()),
+            "target_stiffness": target_stiffness,
+            "cell_contractility": cell_contractility,
+            "organoid_radius": organoid_radius,
+            "matrix_youngs_modulus": matrix_youngs_modulus,
+            "matrix_poisson_ratio": matrix_poisson_ratio,
+        }
+        try:
+            if design_candidate_json.strip():
+                candidate = json.loads(design_candidate_json)
+                if not isinstance(candidate, dict):
+                    raise ValueError("`design_candidate_json` must decode to an object when provided.")
+                request = candidate_to_simulation_request(
+                    candidate,
+                    options=CandidateSimulationMappingOptions(
+                        scenario=scenario.strip().lower(),
+                        target_stiffness=target_stiffness if target_stiffness > 0 else None,
+                        simulation_request_overrides=json.loads(simulation_request_json) if simulation_request_json.strip() else {},
+                        cell_contractility=cell_contractility if cell_contractility > 0 else None,
+                        organoid_radius=organoid_radius if organoid_radius > 0 else None,
+                        matrix_youngs_modulus=matrix_youngs_modulus if matrix_youngs_modulus > 0 else None,
+                        matrix_poisson_ratio=matrix_poisson_ratio,
+                    ),
+                )
+                result = request.to_json()
+                _log_tool_call(
+                    config,
+                    tool_name="build_febio_simulation_request",
+                    arguments=arguments,
+                    result=result,
+                    cached=False,
+                )
+                return result
+            payload = json.loads(simulation_request_json) if simulation_request_json.strip() else {}
+            if not isinstance(payload, dict):
+                raise ValueError("`simulation_request_json` must decode to an object when provided.")
+            payload["scenario"] = scenario.strip().lower()
+            if target_stiffness > 0:
+                payload["target_stiffness"] = target_stiffness
+            if matrix_youngs_modulus > 0:
+                payload["matrix_youngs_modulus"] = matrix_youngs_modulus
+            if matrix_poisson_ratio != 0.3 or "matrix_poisson_ratio" not in payload:
+                payload["matrix_poisson_ratio"] = matrix_poisson_ratio
+            if payload["scenario"] == "bulk_mechanics":
+                payload.setdefault("sample_dimensions", [1.0, 1.0, 1.0])
+                payload.setdefault("prescribed_displacement", -0.1)
+            elif payload["scenario"] == "single_cell_contraction":
+                if cell_contractility > 0:
+                    payload["cell_contractility"] = cell_contractility
+                payload.setdefault("cell_radius", 0.12)
+                payload.setdefault("cell_youngs_modulus", max(payload.get("matrix_youngs_modulus", 8.0) * 2.0, 12.0))
+            elif payload["scenario"] == "organoid_spheroid":
+                if organoid_radius > 0:
+                    payload["organoid_radius"] = organoid_radius
+                payload.setdefault("organoid_radial_displacement", 0.03)
+                payload.setdefault("organoid_youngs_modulus", max(payload.get("matrix_youngs_modulus", 8.0) * 1.5, 10.0))
+            request = simulation_request_from_dict(payload)
+            result = request.to_json()
+            _log_tool_call(
+                config,
+                tool_name="build_febio_simulation_request",
+                arguments=arguments,
+                result=result,
+                cached=False,
+            )
+            return result
+        except Exception as exc:
+            result = f"FEBio simulation request build failed: {exc}"
+            _log_tool_call(
+                config,
+                tool_name="build_febio_simulation_request",
+                arguments=arguments,
+                result=result,
+                cached=False,
+                status="error",
+            )
+            return result
+
+    def run_febio_simulation(request_json: str, artifact_label: str = "") -> str:
+        """Run a validated FEBio simulation request inside the active run directory."""
+
+        arguments = {
+            "artifact_label": artifact_label,
+        }
+        febio_config = _febio_config_from_app(config)
+        try:
+            request = simulation_request_from_json(request_json)
+            safe_label = re.sub(r"[^\w.-]+", "_", artifact_label).strip("._")
+            if config.active_run_dir is not None:
+                base_dir = config.active_run_dir / "simulation"
+            else:
+                base_dir = config.runs_dir / f"tool_simulation_{datetime.now():%Y%m%d_%H%M%S}"
+            simulation_dir = base_dir / safe_label if safe_label else base_dir
+            payload = run_simulation_request(
+                request,
+                simulation_dir=simulation_dir,
+                febio_config=febio_config,
+            )
+            result = json.dumps(payload, ensure_ascii=False, indent=2)
+            _log_tool_call(
+                config,
+                tool_name="run_febio_simulation",
+                arguments={**arguments, "scenario": request.scenario},
+                result=result,
+                cached=False,
+                status="ok" if payload.get("status") != "failed" else "error",
+            )
+            return result
+        except Exception as exc:
+            result = f"FEBio simulation failed: {exc}"
+            _log_tool_call(
+                config,
+                tool_name="run_febio_simulation",
+                arguments=arguments,
+                result=result,
+                cached=False,
+                status="error",
+            )
+            return result
+
+    def summarize_febio_simulation(simulation_payload_json: str) -> str:
+        """Extract a compact structured summary from a FEBio simulation execution payload."""
+
+        arguments: dict[str, object] = {}
+        try:
+            payload = json.loads(simulation_payload_json)
+            if not isinstance(payload, dict):
+                raise ValueError("Simulation payload must decode to an object.")
+            result_payload = payload.get("simulation_result", {})
+            metrics_payload = payload.get("simulation_metrics", {})
+            summary = {
+                "status": payload.get("status", result_payload.get("status", "unknown")),
+                "scenario": payload.get("request", {}).get("scenario", result_payload.get("scenario", "unknown")),
+                "effective_stiffness": metrics_payload.get("effective_stiffness"),
+                "peak_stress": metrics_payload.get("peak_stress"),
+                "displacement_decay_length": metrics_payload.get("displacement_decay_length"),
+                "strain_heterogeneity": metrics_payload.get("strain_heterogeneity"),
+                "target_mismatch_score": metrics_payload.get("target_mismatch_score"),
+                "feasibility_flags": metrics_payload.get("feasibility_flags", {}),
+                "warnings": result_payload.get("warnings", []),
+                "final_summary": payload.get("final_summary", ""),
+            }
+            result = json.dumps(summary, ensure_ascii=False, indent=2)
+            _log_tool_call(
+                config,
+                tool_name="summarize_febio_simulation",
+                arguments=arguments,
+                result=result,
+                cached=False,
+            )
+            return result
+        except Exception as exc:
+            result = f"FEBio simulation summary failed: {exc}"
+            _log_tool_call(
+                config,
+                tool_name="summarize_febio_simulation",
+                arguments=arguments,
+                result=result,
+                cached=False,
+                status="error",
+            )
+            return result
+
+    def compare_simulation_candidates(candidates_json: str) -> str:
+        """Rank structured FEBio candidate payloads without exposing arbitrary code execution."""
+
+        arguments: dict[str, object] = {}
+        try:
+            payload = json.loads(candidates_json)
+            if not isinstance(payload, list):
+                raise ValueError("`candidates_json` must decode to a list of simulation payloads.")
+            result = json.dumps(compare_simulation_candidates_payloads(payload), ensure_ascii=False, indent=2)
+            _log_tool_call(
+                config,
+                tool_name="compare_simulation_candidates",
+                arguments=arguments,
+                result=result,
+                cached=False,
+            )
+            return result
+        except Exception as exc:
+            result = f"FEBio simulation candidate comparison failed: {exc}"
+            _log_tool_call(
+                config,
+                tool_name="compare_simulation_candidates",
+                arguments=arguments,
+                result=result,
+                cached=False,
+                status="error",
+            )
+            return result
+
     return [
         search_pubmed,
         search_crossref,
@@ -1013,4 +1244,8 @@ def build_tools(config: AppConfig):
         run_fiber_network_parameter_scan,
         design_fiber_network_candidates,
         run_fiber_network_validation,
+        build_febio_simulation_request,
+        run_febio_simulation,
+        summarize_febio_simulation,
+        compare_simulation_candidates,
     ]

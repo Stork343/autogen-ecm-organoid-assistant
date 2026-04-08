@@ -53,6 +53,9 @@ from ecm_organoid_agent.frontend import (
     report_excerpt,
     recent_report_rows,
     render_stage_lines,
+    simulation_run_options,
+    simulation_run_snapshot,
+    simulation_run_summary,
     system_layer_rows,
     validate_auth_cookie_value,
     workflow_category_rows,
@@ -178,10 +181,11 @@ class FrontendHelperTests(unittest.TestCase):
     def test_workflow_catalog_and_layers_cover_full_product_surface(self) -> None:
         catalog = workflow_catalog_rows()
         workflow_names = {row["workflow"] for row in catalog}
-        self.assertEqual(len(catalog), 9)
+        self.assertEqual(len(catalog), 10)
         self.assertIn("benchmark", workflow_names)
         self.assertIn("datasets", workflow_names)
         self.assertIn("calibration", workflow_names)
+        self.assertIn("simulation", workflow_names)
         self.assertIn("benchmark_summary", workflow_artifact_labels("benchmark"))
         self.assertIn("dataset_manifest_snapshot", workflow_artifact_labels("datasets"))
 
@@ -195,7 +199,7 @@ class FrontendHelperTests(unittest.TestCase):
         self.assertIn("design_campaign", categories[2]["workflows"])
         flow_families = workflow_flow_family_specs()
         self.assertEqual(len(flow_families), 4)
-        self.assertIn("hybrid", flow_families[1]["workflows"])
+        self.assertIn("simulation", flow_families[1]["workflows"])
         self.assertIn("benchmark", flow_families[3]["stages"])
         dot = project_flow_dot()
         self.assertIn("run_research_agent", dot)
@@ -230,6 +234,43 @@ class FrontendHelperTests(unittest.TestCase):
         examples = workflow_examples()
         self.assertIn("design_campaign", examples)
         self.assertIn("outputs", examples["mechanics"])
+
+        for path in sorted(temp_root.rglob("*"), reverse=True):
+            if path.is_file():
+                path.unlink()
+            elif path.is_dir():
+                path.rmdir()
+        temp_root.rmdir()
+
+    def test_simulation_snapshot_helpers_extract_metrics(self) -> None:
+        temp_root = PROJECT_ROOT / ".tmp_test_simulation_helpers"
+        ensure_workspace(temp_root)
+        run_dir = temp_root / "runs" / "simulation_run"
+        simulation_dir = run_dir / "simulation"
+        simulation_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "metadata.json").write_text(json.dumps({"workflow": "simulation"}), encoding="utf-8")
+        (simulation_dir / "input_request.json").write_text(
+            json.dumps({"scenario": "bulk_mechanics"}),
+            encoding="utf-8",
+        )
+        (simulation_dir / "simulation_result.json").write_text(
+            json.dumps({"status": "succeeded"}),
+            encoding="utf-8",
+        )
+        (simulation_dir / "simulation_metrics.json").write_text(
+            json.dumps({"status": "succeeded", "effective_stiffness": 8.2, "peak_stress": 0.4}),
+            encoding="utf-8",
+        )
+        (simulation_dir / "final_summary.md").write_text("# summary", encoding="utf-8")
+
+        config = AppConfig.from_project_dir(temp_root)
+        options = simulation_run_options(config)
+        self.assertEqual(len(options), 1)
+        snapshot = simulation_run_snapshot(run_dir)
+        self.assertEqual(snapshot["request_payload"]["scenario"], "bulk_mechanics")
+        summary = simulation_run_summary(run_dir)
+        self.assertEqual(summary["scenario"], "bulk_mechanics")
+        self.assertEqual(summary["effective_stiffness"], 8.2)
 
         for path in sorted(temp_root.rglob("*"), reverse=True):
             if path.is_file():

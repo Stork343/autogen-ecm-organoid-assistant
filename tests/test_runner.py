@@ -126,6 +126,54 @@ class PromptBuilderTests(unittest.TestCase):
             self.assertIn("loss_tangent_proxy", design_summary["targets"])
             self.assertIn("max_loss_tangent_proxy", design_summary["constraints"])
 
+    def test_design_workflow_can_attach_febio_simulation_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            project_dir = Path(tmp_dir)
+            for dirname in ("memory", "library", "reports", "templates", "runs", ".cache"):
+                (project_dir / dirname).mkdir()
+
+            fake_simulation = {
+                "status": "succeeded",
+                "request": {"scenario": "bulk_mechanics"},
+                "runner": {"command": ["febio4", "-i", "input.feb", "-silent"]},
+                "simulation_result": {"status": "succeeded", "warnings": []},
+                "simulation_metrics": {
+                    "effective_stiffness": 8.1,
+                    "peak_stress": 0.42,
+                    "displacement_decay_length": None,
+                    "strain_heterogeneity": 0.1,
+                    "target_mismatch_score": 0.01,
+                    "feasibility_flags": {"solver_converged": True},
+                },
+                "final_summary_path": str(project_dir / "runs" / "fake" / "simulation" / "final_summary.md"),
+                "final_summary": "ok",
+                "simulation_dir": str(project_dir / "runs" / "fake" / "simulation"),
+                "febio": {"available": True},
+            }
+
+            with patch("ecm_organoid_agent.tools.run_simulation_request", return_value=fake_simulation):
+                result = run_research_agent_sync(
+                    project_dir=project_dir,
+                    query="Design an ECM near stiffness 8 Pa and verify with FEBio",
+                    report_name="design_report.md",
+                    workflow="design",
+                    target_stiffness=8.0,
+                    target_anisotropy=0.1,
+                    target_connectivity=0.95,
+                    target_stress_propagation=0.5,
+                    design_top_k=2,
+                    design_candidate_budget=4,
+                    design_monte_carlo_runs=1,
+                    design_run_simulation=True,
+                    design_simulation_scenario="bulk_mechanics",
+                    design_simulation_top_k=1,
+                )
+
+            design_summary = json.loads((result.run_dir / "design_summary.json").read_text(encoding="utf-8"))
+            self.assertIn("design_simulation", design_summary)
+            self.assertEqual(design_summary["design_simulation"]["scenario"], "bulk_mechanics")
+            self.assertIn("FEBio_verification=", result.final_summary)
+
     def test_design_campaign_workflow_writes_summary_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             project_dir = Path(tmp_dir)
@@ -224,6 +272,7 @@ class PromptBuilderTests(unittest.TestCase):
                 "repeatability_benchmark": {"summary": {"stiffness_std": 0.0}},
                 "identifiability_proxy_benchmark": {"summary": {"identifiability_risk": "high"}},
                 "mechanics_fit_benchmark": {"summary": {"mean_relative_error": 0.01}},
+                "simulation_smoke_benchmark": {"summary": {"available": False, "status": "unavailable", "overall_pass": False}},
                 "calibration_design_benchmark": {"summary": {"available": False, "mean_combined_error_improvement": 0.0}},
                 "summary": {
                     "overall_pass": False,
@@ -235,6 +284,11 @@ class PromptBuilderTests(unittest.TestCase):
                     "repeatability_stiffness_std": 0.0,
                     "identifiability_risk": "high",
                     "fit_mean_relative_error": 0.01,
+                    "simulation_smoke_available": False,
+                    "simulation_smoke_status": "unavailable",
+                    "simulation_smoke_pass": False,
+                    "simulation_smoke_effective_stiffness": None,
+                    "simulation_smoke_target_mismatch_score": None,
                     "calibration_benchmark_available": False,
                     "calibration_design_improvement": 0.0,
                 },
@@ -262,9 +316,11 @@ class PromptBuilderTests(unittest.TestCase):
             self.assertIn("repeatability_benchmark", benchmark_summary)
             self.assertIn("identifiability_proxy_benchmark", benchmark_summary)
             self.assertIn("mechanics_fit_benchmark", benchmark_summary)
+            self.assertIn("simulation_smoke_benchmark", benchmark_summary)
             self.assertIn("calibration_design_benchmark", benchmark_summary)
             self.assertIn("calibration_design_improvement", benchmark_summary["summary"])
             self.assertIn("property_target_mean_error", benchmark_summary["summary"])
+            self.assertIn("simulation_smoke_status", benchmark_summary["summary"])
 
     def test_dataset_workflow_writes_manifest_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

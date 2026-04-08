@@ -2,13 +2,14 @@
 
 一个面向 ECM 与类器官研究的研究型智能体工作台。
 
-它不是通用聊天机器人，而是一套围绕“文献检索 -> 证据整理 -> 机制假设 -> 力学建模 -> 设计建议 -> 报告沉淀”搭建的 ECM 研究系统。项目既可以作为命令行智能体运行，也可以作为 Streamlit 前端、桌面壳应用和一键演示系统使用。
+它不是通用聊天机器人，而是一套围绕“文献检索 -> 证据整理 -> 机制假设 -> 力学建模 -> 候选设计 -> FEBio 仿真验证 -> 决策报告”搭建的 ECM 研究系统。项目既可以作为命令行智能体运行，也可以作为 Streamlit 前端、桌面壳应用和一键演示系统使用。
 
-当前仓库包含 3 类能力：
+当前仓库包含 4 类能力：
 
 1. 文献型智能体：围绕 ECM / hydrogel / organoid 问题做多智能体协作式综述与周报生成
 2. 力学与设计引擎：围绕 creep / relaxation / elastic / frequency sweep / cyclic 数据做建模、反推和候选设计
-3. 研究工作台：把运行过程、阶段产物、报告、数据集、Demo 和本地资料统一收纳在一个可复盘的 workspace 中
+3. FEBio-backed simulation：用固定模板 + 参数注入 + schema 校验运行 3 类受限 FEBio 场景，并返回结构化 JSON 指标
+4. 研究工作台：把运行过程、阶段产物、报告、数据集、Demo 和本地资料统一收纳在一个可复盘的 workspace 中
 
 ## 目录
 
@@ -42,6 +43,7 @@ ECM 与类器官研究通常会同时碰到几类任务：
 
 - 用 AutoGen 处理文献协作和报告写作
 - 用确定性的 mechanics / fiber-network backend 处理建模、仿真与设计
+- 用受约束的 FEBio integration layer 处理固定场景的 FE 验证，而不是让 agent 自由生成任意 XML
 - 用 `memory/`、`library/`、`reports/`、`runs/` 组织你的个人研究知识库
 
 ## 核心能力总览
@@ -80,17 +82,29 @@ ECM 与类器官研究通常会同时碰到几类任务：
 - 再运行 fiber-network simulation 和参数扫描
 - 最终给出一个更接近“研究决策”的综合报告
 
-### 5. 数据集与校准
+### 5. FEBio-backed simulation
+
+- 当前第一阶段只支持 3 个固定场景：
+  - `bulk_mechanics`
+  - `single_cell_contraction`
+  - `organoid_spheroid`
+- 使用固定模板 + 参数注入 + schema 校验生成 `input.feb`
+- 输出 `simulation_result.json`、`simulation_metrics.json` 和 Markdown summary
+- 支持接入 `design` workflow，对 top-k 候选做可选仿真复核
+- 若本机未安装 FEBio，会优雅降级并明确标记“未进行仿真验证”
+
+### 6. 数据集与校准
 
 - 维护 curated public hydrogel dataset 清单
 - 支持把本地下载的 archive 自动注册进 `datasets/`
 - 支持标准化已有数据目录
 - 支持把实验数据转换成 calibration prior，用于后续设计 workflow
 
-### 6. 研究工作台与前端
+### 7. 研究工作台与前端
 
 - Dashboard：总体状态和最近结果
 - Design Board：设计候选与 formulation mapping 可视化
+- Simulation：固定场景 FEBio 运行、指标查看与工件浏览
 - Agent Console：查看运行日志和结构化 payload
 - Research Run：发起各类 workflow
 - Demo：一键跑完整演示链路
@@ -155,7 +169,8 @@ flowchart LR
 | `single` | 单智能体版本的文献综述 | 是 | `--query` | 单份综述报告 |
 | `mechanics` | 力学数据拟合与解释 | 否 | `--data-path` | 模型选择、参数、拟合质量、解释报告 |
 | `hybrid` | 文献 + 力学 + 仿真联合决策 | 是 | `--data-path` | 综合工程报告 |
-| `design` | 单目标窗口 inverse design | 否 | `--target-stiffness` | top-k 候选、约束评估、配方映射 |
+| `simulation` | 固定场景 FEBio 仿真评估 | 否 | `--simulation-scenario` | `input.feb`、结果 JSON、指标 JSON、summary 报告 |
+| `design` | 单目标窗口 inverse design，可选 FEBio 复核 | 否 | `--target-stiffness` | top-k 候选、约束评估、配方映射、可选仿真证据 |
 | `design_campaign` | 多窗口设计 campaign | 否 | `--campaign-target-stiffnesses` | 跨目标窗口比较报告 |
 | `benchmark` | 力学 / 设计核心能力回归测试 | 否 | 无 | solver、design、repeatability、identifiability 报告 |
 | `datasets` | 列出和登记 public dataset | 否 | `--query` | 数据集目录报告、manifest 快照 |
@@ -194,6 +209,14 @@ flowchart LR
 - 你想把 literature judgment、力学数据和 network simulation 放在同一份报告里
 - 你在做“材料设计决策”，而不仅是文献综述
 
+#### `simulation`
+
+适合：
+
+- 你已经有一组 ECM 参数，想在固定 FEBio 模板里做 FE 复核
+- 你需要结构化的 stress / displacement / stability / suitability 指标
+- 你想把结果写入 `runs/`，而不是手工维护散落的 `.feb` 与日志文件
+
 #### `design`
 
 适合：
@@ -201,6 +224,7 @@ flowchart LR
 - 你已知目标 stiffness
 - 你想快速得到一组可排序候选
 - 你需要一个面向 wet-lab 的初始 formulation anchor
+- 你希望可选地对 top-k 候选追加 FEBio 复核，而不是只停留在启发式排序
 
 #### `design_campaign`
 
@@ -260,11 +284,13 @@ autogen-ecm-organoid-assistant/
 - [`src/ecm_organoid_agent/runner.py`](src/ecm_organoid_agent/runner.py)
   - workflow 路由与智能体编排核心
 - [`src/ecm_organoid_agent/tools.py`](src/ecm_organoid_agent/tools.py)
-  - PubMed、Crossref、本地文献、保存报告、力学拟合与仿真工具
+  - PubMed、Crossref、本地文献、保存报告、力学拟合、fiber-network 与 FEBio 安全工具
 - [`src/ecm_organoid_agent/mechanics.py`](src/ecm_organoid_agent/mechanics.py)
   - 力学模型、拟合与诊断
 - [`src/ecm_organoid_agent/fiber_network.py`](src/ecm_organoid_agent/fiber_network.py)
   - ECM fiber-network simulation、validation 和 design backend
+- [`src/ecm_organoid_agent/febio/`](src/ecm_organoid_agent/febio)
+  - FEBio 配置、schema、固定模板、构建、运行、解析和指标计算
 - [`src/ecm_organoid_agent/formulation.py`](src/ecm_organoid_agent/formulation.py)
   - 将抽象设计参数映射为更可实验化的 formulation suggestion
 - [`src/ecm_organoid_agent/datasets.py`](src/ecm_organoid_agent/datasets.py)
@@ -359,6 +385,10 @@ python -m ecm_organoid_agent \
 | `CROSSREF_MAILTO` | Crossref 联系邮箱 | 推荐填写 |
 | `CACHE_TTL_HOURS` | 检索缓存 TTL | 默认 `168` 小时 |
 | `PUBMED_MAX_RESULTS` | 每次默认检索量 | 默认 `8` |
+| `FEBIO_ENABLED` | 是否启用 FEBio 集成 | 默认 `true`，未安装时自动降级 |
+| `FEBIO_EXECUTABLE` | FEBio CLI 路径 | 默认尝试自动发现 `febio4` / `febio` |
+| `FEBIO_TIMEOUT_SECONDS` | FEBio 运行超时 | 默认 `300` |
+| `FEBIO_DEFAULT_TMP_DIR` | FEBio 临时目录 | 默认 `<project>/.cache/febio_tmp` |
 | `FRONTEND_REQUIRE_LOGIN` | 前端是否启用登录保护 | 默认 `false` |
 | `FRONTEND_USERNAME` | 前端登录用户名 | 可选 |
 | `FRONTEND_PASSWORD` | 前端明文密码 | 可选 |
@@ -374,6 +404,7 @@ MODEL_NAME=deepseek-chat
 DEEPSEEK_API_KEY=your_deepseek_api_key_here
 NCBI_EMAIL=your_email@example.com
 CROSSREF_MAILTO=your_email@example.com
+FEBIO_EXECUTABLE=/Applications/FEBioStudio/FEBioStudio.app/Contents/MacOS/febio4
 ```
 
 ### 对外访问时的保护配置
@@ -471,7 +502,28 @@ python -m ecm_organoid_agent \
   --report-name hybrid_report.md
 ```
 
-### 5. 单目标 inverse design
+### 5. 固定场景 FEBio simulation
+
+```bash
+python -m ecm_organoid_agent \
+  --workflow simulation \
+  --query "Bulk verify ECM candidate with FEBio" \
+  --simulation-scenario bulk_mechanics \
+  --target-stiffness 8 \
+  --matrix-youngs-modulus 8 \
+  --matrix-poisson-ratio 0.3 \
+  --report-name febio_simulation_report.md
+```
+
+当前 `simulation` workflow 只支持：
+
+- `bulk_mechanics`
+- `single_cell_contraction`
+- `organoid_spheroid`
+
+它不是通用任意 FE 建模平台。agent 不会直接生成任意 `.feb`，而是只会填充固定模板允许的字段。
+
+### 6. 单目标 inverse design
 
 ```bash
 python -m ecm_organoid_agent \
@@ -489,7 +541,32 @@ python -m ecm_organoid_agent \
   --report-name design_report.md
 ```
 
-### 6. 传入额外材料条件提示
+### 7. design + FEBio 联动
+
+```bash
+python -m ecm_organoid_agent \
+  --workflow design \
+  --query "Design a GelMA-like ECM near stiffness 8 Pa with FEBio verification" \
+  --target-stiffness 8 \
+  --target-anisotropy 0.1 \
+  --target-connectivity 0.95 \
+  --target-stress-propagation 0.5 \
+  --design-top-k 3 \
+  --design-candidate-budget 12 \
+  --design-monte-carlo-runs 4 \
+  --design-run-simulation \
+  --design-simulation-scenario bulk_mechanics \
+  --design-simulation-top-k 2 \
+  --report-name design_with_febio_report.md
+```
+
+如果本机未安装 FEBio：
+
+- `design` workflow 仍然会完成 mechanics-informed 候选搜索
+- 最终报告会明确标记“未进行 FEBio 仿真验证”
+- 不会静默跳过，也不会伪造仿真证据
+
+### 8. 传入额外材料条件提示
 
 ```bash
 python -m ecm_organoid_agent \
@@ -502,7 +579,7 @@ python -m ecm_organoid_agent \
   --report-name condition_aware_design.md
 ```
 
-### 7. 多窗口设计 campaign
+### 9. 多窗口设计 campaign
 
 ```bash
 python -m ecm_organoid_agent \
@@ -517,7 +594,7 @@ python -m ecm_organoid_agent \
   --report-name design_campaign_report.md
 ```
 
-### 8. 数据集工作流
+### 10. 数据集工作流
 
 ```bash
 python -m ecm_organoid_agent \
@@ -531,7 +608,7 @@ python -m ecm_organoid_agent \
 - 根据 query 列出当前 curated public dataset
 - 自动登记 `datasets/` 目录下已存在的 loose archive
 
-### 9. 校准工作流
+### 11. 校准工作流
 
 ```bash
 python -m ecm_organoid_agent \
@@ -542,7 +619,7 @@ python -m ecm_organoid_agent \
   --report-name calibration_report.md
 ```
 
-### 10. Benchmark
+### 12. Benchmark
 
 ```bash
 python -m ecm_organoid_agent \
@@ -550,6 +627,11 @@ python -m ecm_organoid_agent \
   --query "Benchmark the current ECM mechanics core" \
   --report-name benchmark_report.md
 ```
+
+当前 benchmark 除了 fiber-network / mechanics / design 回归外，还会附带一个轻量的 FEBio simulation smoke summary：
+
+- 若 FEBio 可用，会运行一个最小 bulk benchmark
+- 若 FEBio 不可用，会在 benchmark summary 中明确标记 `unavailable`
 
 ## 前端与桌面运行
 
@@ -741,6 +823,7 @@ runs/<timestamp>_<workflow>_<slug>/
 - `design_validation.md`
 - `design_agent.md`
 - `design_sensitivity.md`
+- `design_simulation.md`
 - `formulation_mapping.md`
 - `final_summary.md`
 
@@ -748,6 +831,19 @@ runs/<timestamp>_<workflow>_<slug>/
 
 - `campaign_validation.md`
 - `campaign_agent.md`
+
+### simulation workflow 常见工件
+
+在 `runs/<run_id>/simulation/` 下至少会看到：
+
+- `input_request.json`
+- `input.feb`
+- `metadata.json`
+- `febio_stdout.txt`
+- `febio_stderr.txt`
+- `simulation_result.json`
+- `simulation_metrics.json`
+- `final_summary.md`
 - `formulation_mapping.md`
 - `final_summary.md`
 
@@ -937,6 +1033,7 @@ python -m pytest -q
 
 - 不是最终 wet-lab protocol 生成器
 - 不是材料特异性的高精度商业仿真平台
+- 不是可让 agent 任意生成 `.feb`、任意网格和任意边界条件的通用 FE 建模器
 - 不是生物学 readout 与 mechanics 的全局联合优化系统
 - 不是无需人工复核即可直接发表或直接下实验单的自动化系统
 
@@ -944,6 +1041,7 @@ python -m pytest -q
 
 - 文献 workflow 会尽量避免编造 DOI、PMID、浓度和实验条件，但最终仍应人工复核
 - design 输出是候选起点，不是验证完成的配方
+- FEBio integration 当前第一阶段只支持 3 个固定场景，重点是可测试、可复盘和可接入 design，而不是多物理场大全
 - mechanics 的 selected model 反映“当前可解释的最优简单模型”，不代表真实材料本构一定如此
 - 若要公开部署前端，务必开启登录保护并再加一层访问控制
 

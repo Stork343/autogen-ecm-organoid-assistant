@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import tempfile
 from typing import Any, Sequence
 
 import numpy as np
@@ -13,6 +14,7 @@ from .calibration import (
     run_calibration_pipeline,
 )
 from .fiber_network import default_validation_params, design_ecm_candidates, run_simulation, run_tensile_test, simulate_ecm
+from .febio import FEBioConfig, BulkMechanicsRequest, run_simulation_request
 from .mechanics import (
     analyze_cyclic_response,
     fit_burgers_creep_coarse,
@@ -79,6 +81,69 @@ def default_inverse_design_constraints() -> dict[str, float]:
 
 def default_calibration_benchmark_dataset_id() -> str:
     return "hydrogel_characterization_data"
+
+
+def run_febio_simulation_smoke_benchmark(*, project_dir: Path | None = None) -> dict[str, Any]:
+    febio_config = FEBioConfig.from_env(project_dir)
+    if not febio_config.available:
+        return {
+            "cases": [],
+            "summary": {
+                "available": False,
+                "status": "unavailable",
+                "overall_pass": False,
+                "reason": febio_config.status_message,
+                "effective_stiffness": None,
+                "target_mismatch_score": None,
+                "solver_converged": False,
+            },
+        }
+
+    request = BulkMechanicsRequest(
+        title="FEBio smoke benchmark",
+        matrix_youngs_modulus=8.0,
+        matrix_poisson_ratio=0.3,
+        sample_dimensions=(1.0, 1.0, 1.0),
+        prescribed_displacement=-0.05,
+        mesh_resolution=(2, 2, 2),
+        time_steps=2,
+        step_size=0.5,
+        target_stiffness=8.0,
+    )
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        payload = run_simulation_request(
+            request,
+            simulation_dir=Path(tmp_dir),
+            febio_config=febio_config,
+        )
+    metrics = payload.get("simulation_metrics", {}) if isinstance(payload.get("simulation_metrics"), dict) else {}
+    mismatch = float(metrics.get("target_mismatch_score")) if metrics.get("target_mismatch_score") is not None else None
+    solver_converged = bool(metrics.get("feasibility_flags", {}).get("solver_converged", False))
+    overall_pass = bool(
+        payload.get("status") == "succeeded"
+        and solver_converged
+        and mismatch is not None
+        and mismatch <= 0.3
+    )
+    return {
+        "cases": [
+            {
+                "request": request.to_dict(),
+                "status": payload.get("status", "unknown"),
+                "simulation_metrics": metrics,
+            }
+        ],
+        "summary": {
+            "available": True,
+            "status": payload.get("status", "unknown"),
+            "overall_pass": overall_pass,
+            "reason": "",
+            "effective_stiffness": metrics.get("effective_stiffness"),
+            "target_mismatch_score": metrics.get("target_mismatch_score"),
+            "solver_converged": solver_converged,
+            "peak_stress": metrics.get("peak_stress"),
+        },
+    }
 
 
 def run_solver_benchmark(
@@ -1053,6 +1118,7 @@ def run_mechanics_benchmark_suite(
     repeatability = run_inverse_design_repeatability_benchmark()
     identifiability = run_identifiability_proxy_benchmark()
     fitting = run_mechanics_fit_benchmark()
+    simulation_smoke = run_febio_simulation_smoke_benchmark(project_dir=project_dir)
     calibration_design = (
         run_calibration_design_benchmark(project_dir=project_dir)
         if include_calibration_design
@@ -1087,6 +1153,7 @@ def run_mechanics_benchmark_suite(
         and repeatability["summary"]["overall_pass"]
         and identifiability["summary"]["overall_pass"]
         and fitting["summary"]["overall_pass"]
+        and (not simulation_smoke["summary"]["available"] or simulation_smoke["summary"]["overall_pass"])
         and (not calibration_design["summary"]["available"] or calibration_design["summary"]["overall_pass"])
     )
     return {
@@ -1100,6 +1167,7 @@ def run_mechanics_benchmark_suite(
         "repeatability_benchmark": repeatability,
         "identifiability_proxy_benchmark": identifiability,
         "mechanics_fit_benchmark": fitting,
+        "simulation_smoke_benchmark": simulation_smoke,
         "calibration_design_benchmark": calibration_design,
         "summary": {
             "solver_pass_rate": solver["summary"]["pass_rate"],
@@ -1110,6 +1178,11 @@ def run_mechanics_benchmark_suite(
             "repeatability_stiffness_std": repeatability["summary"]["stiffness_std"],
             "identifiability_risk": identifiability["summary"]["identifiability_risk"],
             "fit_mean_relative_error": fitting["summary"]["mean_relative_error"],
+            "simulation_smoke_available": simulation_smoke["summary"]["available"],
+            "simulation_smoke_status": simulation_smoke["summary"]["status"],
+            "simulation_smoke_pass": simulation_smoke["summary"]["overall_pass"],
+            "simulation_smoke_effective_stiffness": simulation_smoke["summary"]["effective_stiffness"],
+            "simulation_smoke_target_mismatch_score": simulation_smoke["summary"]["target_mismatch_score"],
             "calibration_design_improvement": calibration_design["summary"]["mean_combined_error_improvement"],
             "calibration_benchmark_available": calibration_design["summary"]["available"],
             "calibration_cached_from_run": calibration_design["summary"].get("cached_from_run", "NR"),
