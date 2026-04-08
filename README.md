@@ -1,8 +1,62 @@
 # AutoGen ECM Organoid Assistant
 
-一个面向 ECM 与类器官研究的研究型智能体工作台。
+## 30 秒简介
 
-它不是通用聊天机器人，而是一套围绕“文献检索 -> 证据整理 -> 机制假设 -> 力学建模 -> 候选设计 -> FEBio 仿真验证 -> 决策报告”搭建的 ECM 研究系统。项目既可以作为命令行智能体运行，也可以作为 Streamlit 前端、桌面壳应用和一键演示系统使用。
+这是一个面向 ECM 与类器官研究的研究型工作台，主线不是聊天，而是：
+
+- literature-guided candidate generation
+- controlled FEBio-backed simulation
+- structured decision reporting
+
+它把文献线索、力学拟合、候选设计、固定场景 FEBio 验证、报告和 `runs/` 工件放进同一个可复盘 workspace。
+
+## 核心闭环流程
+
+```text
+literature / priors
+-> mechanics-informed candidate generation
+-> controlled simulation request
+-> template-driven FEBio execution
+-> structured metrics + final recommendation
+```
+
+## 最小 CLI 示例
+
+```bash
+python -m ecm_organoid_agent \
+  --workflow simulation \
+  --query "Bulk verify ECM candidate with FEBio" \
+  --simulation-scenario bulk_mechanics \
+  --target-stiffness 8 \
+  --matrix-youngs-modulus 8 \
+  --matrix-poisson-ratio 0.3 \
+  --report-name febio_simulation_report.md
+```
+
+## design + simulation 示例
+
+```bash
+python -m ecm_organoid_agent \
+  --workflow design \
+  --query "Design a GelMA-like ECM near stiffness 8 Pa with FEBio verification" \
+  --target-stiffness 8 \
+  --target-anisotropy 0.1 \
+  --target-connectivity 0.95 \
+  --target-stress-propagation 0.5 \
+  --design-run-simulation \
+  --design-simulation-scenario bulk_mechanics \
+  --design-simulation-top-k 2 \
+  --report-name design_with_febio_report.md
+```
+
+## 边界说明
+
+- 当前 FEBio integration 只支持 3 个固定场景：`bulk_mechanics`、`single_cell_contraction`、`organoid_spheroid`
+- 这不是通用任意 FE 建模平台
+- 这不是自动 wet-lab protocol generator
+- 这是 phase-1 research prototype，结果仍需人工判断和实验验证
+
+一个面向 ECM 与类器官研究的研究型智能体工作台。
 
 当前仓库包含 4 类能力：
 
@@ -13,6 +67,11 @@
 
 ## 目录
 
+- [30 秒简介](#30-秒简介)
+- [核心闭环流程](#核心闭环流程)
+- [最小 CLI 示例](#最小-cli-示例)
+- [design + simulation 示例](#design--simulation-示例)
+- [边界说明](#边界说明)
 - [这个项目解决什么问题](#这个项目解决什么问题)
 - [核心能力总览](#核心能力总览)
 - [多智能体如何协作](#多智能体如何协作)
@@ -521,6 +580,28 @@ python -m ecm_organoid_agent \
 - `single_cell_contraction`
 - `organoid_spheroid`
 
+```bash
+python -m ecm_organoid_agent \
+  --workflow simulation \
+  --query "Evaluate single-cell traction transmission in ECM" \
+  --simulation-scenario single_cell_contraction \
+  --target-stiffness 8 \
+  --matrix-youngs-modulus 8 \
+  --cell-contractility 0.02 \
+  --report-name febio_single_cell_report.md
+```
+
+```bash
+python -m ecm_organoid_agent \
+  --workflow simulation \
+  --query "Evaluate organoid-ECM interaction with a spheroid proxy" \
+  --simulation-scenario organoid_spheroid \
+  --target-stiffness 8 \
+  --matrix-youngs-modulus 8 \
+  --organoid-radius 0.18 \
+  --report-name febio_organoid_report.md
+```
+
 它不是通用任意 FE 建模平台。agent 不会直接生成任意 `.feb`，而是只会填充固定模板允许的字段。
 
 ### 6. 单目标 inverse design
@@ -653,6 +734,8 @@ streamlit run src/ecm_organoid_agent/frontend.py
   - 总览当前 workspace、最近报告、最近 runs、workflow atlas
 - `Design Board`
   - 查看 design / campaign 结果、候选比较和 formulation mapping
+- `Simulation`
+  - 运行固定场景 FEBio、查看 structured metrics、warnings 和 artifact 文件
 - `Agent Console`
   - 查看结构化 payload、原始工件和调试信息
 - `Research Run`
@@ -941,6 +1024,7 @@ ecm-organoid-demo --help
 - `single`
 - `datasets`
 - `calibration`
+- `simulation`
 - `mechanics`
 - `hybrid`
 - `design`
@@ -963,6 +1047,7 @@ ecm-organoid-demo --skip-ai-workflows
 
 - `datasets`
 - `calibration`
+- `simulation`
 - `mechanics`
 - `design`
 - `design_campaign`
@@ -981,6 +1066,17 @@ Demo 还会自动准备：
 - `demo_assets/sample_mechanics_creep.csv`
 - `library/demo_ecm_note.md`
 - 必要时复制样例 dataset 到当前 workspace
+
+当前 demo 已包含：
+
+- 独立 `simulation` workflow 演示
+- `design + FEBio verification` 联动演示
+- 若本机未安装 FEBio，则相关步骤优雅降级并在 summary 中标记 `unavailable`
+
+辅助文档：
+
+- [docs/frontend_guide.md](docs/frontend_guide.md)
+- [docs/simulation_workflow.md](docs/simulation_workflow.md)
 
 所以它很适合：
 

@@ -9,7 +9,8 @@ It supports four core research tasks:
 1. Literature and evidence synthesis
 2. Mechanics fitting from datasets
 3. ECM inverse design from target mechanics
-4. Batch campaign comparison across multiple stiffness windows
+4. Controlled FEBio-backed simulation and simulation-aware design review
+5. Batch campaign comparison across multiple stiffness windows
 
 ## 2. Recommended Workflow
 
@@ -34,6 +35,12 @@ It supports four core research tasks:
 ### D. Use `hybrid` when:
 
 - you want literature, mechanics, and simulation in one report
+
+### E. Use `simulation` when:
+
+- you want to run one of the fixed FEBio scenarios directly
+- you want structured metrics, warnings, and preserved run artifacts
+- you want to validate one ECM candidate before or alongside design review
 
 ## 3. How To Read The Main Outputs
 
@@ -80,11 +87,18 @@ Use it as:
 - `campaign_summary.json`
 - `final_summary.md`
 
+### Simulation runs
+
+- `simulation/simulation_result.json`
+- `simulation/simulation_metrics.json`
+- `simulation/final_summary.md`
+
 ## 5. Practical Usage Notes
 
 - Prefer constraints when you actually care about feasibility.
 - Use `design_campaign` before committing to one target window.
 - Compare formulation families in the Design Board before reading long reports.
+- Use the Simulation tab when you want direct FEBio metrics rather than only design summaries.
 - Use the report archive for narrative context and the JSON artifacts for structured downstream analysis.
 - If concentration / curing are not enough, pass extra material-condition hints as JSON, such as temperature, initiator fraction, molecular weight, or degree of substitution.
 

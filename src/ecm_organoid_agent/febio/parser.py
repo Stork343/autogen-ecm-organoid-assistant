@@ -89,6 +89,12 @@ def _warnings_from_logs(runner_result: RunnerResult) -> list[str]:
     ]:
         if token in combined and message not in warnings:
             warnings.append(message)
+    if not runner_result.log_path.exists():
+        warnings.append("FEBio logfile is missing.")
+    if not runner_result.xplt_path.exists():
+        warnings.append("FEBio plotfile is missing.")
+    if not runner_result.dmp_path.exists():
+        warnings.append("FEBio restart dump is missing.")
     return warnings
 
 

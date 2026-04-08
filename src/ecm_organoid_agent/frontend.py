@@ -2424,6 +2424,8 @@ def benchmark_demo_rows(run_dir: Path) -> List[Dict[str, Any]]:
         {"metric": "fit_mean_relative_error", "value": format_display_value(summary.get("fit_mean_relative_error"))},
         {"metric": "simulation_smoke_status", "value": format_display_value(summary.get("simulation_smoke_status"))},
         {"metric": "simulation_smoke_pass", "value": format_display_value(summary.get("simulation_smoke_pass"))},
+        {"metric": "simulation_smoke_effective_stiffness", "value": format_display_value(summary.get("simulation_smoke_effective_stiffness"))},
+        {"metric": "simulation_smoke_target_mismatch_score", "value": format_display_value(summary.get("simulation_smoke_target_mismatch_score"))},
         {"metric": "calibration_design_improvement", "value": format_display_value(summary.get("calibration_design_improvement"))},
         {"metric": "calibration_cached_from_run", "value": format_display_value(summary.get("calibration_cached_from_run"))},
         {"metric": "calibration_routing_modes", "value": format_display_value(summary.get("calibration_routing_modes"))},

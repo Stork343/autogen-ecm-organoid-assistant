@@ -28,6 +28,7 @@ class DemoWorkflowTests(unittest.TestCase):
                 "single",
                 "datasets",
                 "calibration",
+                "simulation",
                 "mechanics",
                 "hybrid",
                 "design",
@@ -41,6 +42,7 @@ class DemoWorkflowTests(unittest.TestCase):
         self.assertNotIn("team", deterministic_workflows)
         self.assertNotIn("single", deterministic_workflows)
         self.assertNotIn("hybrid", deterministic_workflows)
+        self.assertIn("simulation", deterministic_workflows)
         self.assertIn("benchmark", deterministic_workflows)
 
     def test_prepare_demo_assets_bootstraps_workspace_inputs(self) -> None:
@@ -85,4 +87,3 @@ class DemoWorkflowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

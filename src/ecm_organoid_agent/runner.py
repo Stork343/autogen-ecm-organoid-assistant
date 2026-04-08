@@ -3612,32 +3612,6 @@ def _design_simulation_not_run_payload(*, enabled: bool, scenario: str, reason: 
     }
 
 
-def _candidate_simulation_request(
-    *,
-    candidate: dict[str, object],
-    target_stiffness: float,
-    scenario: str,
-    simulation_request_json: str,
-    cell_contractility: Optional[float],
-    organoid_radius: Optional[float],
-    matrix_youngs_modulus: Optional[float],
-    matrix_poisson_ratio: Optional[float],
-) -> dict[str, object]:
-    return design_payload_to_simulation_requests(
-        {"top_candidates": [candidate]},
-        top_k=1,
-        options=CandidateSimulationMappingOptions(
-            scenario=scenario,
-            target_stiffness=target_stiffness,
-            simulation_request_overrides=_parse_json_object(simulation_request_json) if simulation_request_json.strip() else {},
-            cell_contractility=cell_contractility,
-            organoid_radius=organoid_radius,
-            matrix_youngs_modulus=matrix_youngs_modulus,
-            matrix_poisson_ratio=matrix_poisson_ratio,
-        ),
-    )[0]
-
-
 def _run_design_candidate_simulations(
     *,
     config: AppConfig,
@@ -3956,6 +3930,40 @@ def _build_design_report_markdown(
             warnings = item.get("simulation_result", {}).get("warnings", []) if isinstance(item.get("simulation_result"), dict) else []
             if warnings:
                 uncertainty_lines.append(f"- {item.get('candidate_id', 'candidate')}: warnings={json.dumps(warnings, ensure_ascii=False)}")
+    recommended_lines: list[str] = []
+    retained_lines: list[str] = []
+    not_recommended_lines: list[str] = []
+    if best_simulated:
+        metrics = best_simulated.get("simulation_metrics", {}) if isinstance(best_simulated.get("simulation_metrics"), dict) else {}
+        recommended_lines.append(
+            f"- {best_simulated.get('candidate_id', 'NR')}: best combined simulation ranking; mismatch={metrics.get('target_mismatch_score', 'NR')}, peak_stress={metrics.get('peak_stress', 'NR')}."
+        )
+    elif best_candidate:
+        recommended_lines.append(
+            f"- Rank {best_candidate.get('rank', 'NR')}: best mechanics-informed candidate; FEBio verification was unavailable or not requested."
+        )
+    simulated_ranking = comparison.get("ranking", []) if isinstance(comparison, dict) else []
+    for row in simulated_ranking[1:3]:
+        retained_lines.append(
+            f"- {row.get('candidate_id', 'NR')}: retained as backup; comparison_score={row.get('comparison_score', 'NR')}."
+        )
+    for candidate in top_candidates:
+        if candidate is best_candidate:
+            continue
+        feasible = bool(candidate.get("feasible", False))
+        rank = candidate.get("rank", "NR")
+        if not feasible:
+            not_recommended_lines.append(f"- Rank {rank}: not recommended because hard constraints are violated.")
+    if design_simulation and isinstance(design_simulation, dict):
+        for item in design_simulation.get("candidate_simulations", []):
+            if item.get("status") != "succeeded":
+                not_recommended_lines.append(
+                    f"- {item.get('candidate_id', 'NR')}: not recommended because simulation status={item.get('status', 'NR')}."
+                )
+    if not retained_lines:
+        retained_lines = ["- No additional retained candidates."]
+    if not not_recommended_lines:
+        not_recommended_lines = ["- No candidates were explicitly excluded by phase-1 simulation evidence."]
 
     return "\n".join(
         [
@@ -4005,6 +4013,16 @@ def _build_design_report_markdown(
             "",
             "## 10. Formulation Translation",
             *formulation_lines,
+            "",
+            "## 11. Final Recommendation",
+            "### Recommended Candidate",
+            *recommended_lines,
+            "",
+            "### Retained Candidates",
+            *retained_lines,
+            "",
+            "### Not Recommended Candidates",
+            *not_recommended_lines,
         ]
     )
 

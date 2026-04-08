@@ -156,6 +156,19 @@ def default_demo_steps(project_dir: Path, *, include_ai_workflows: bool = True) 
                 params={"dataset_id": "hydrogel_characterization_data", "calibration_max_samples": 4},
             ),
             DemoStep(
+                slug="simulation",
+                workflow="simulation",
+                title="Standalone FEBio simulation",
+                description="Run one controlled FEBio scenario as a smoke-checkable artifact pipeline.",
+                query="Run a bulk FEBio verification on a candidate ECM matrix",
+                params={
+                    "simulation_scenario": "bulk_mechanics",
+                    "target_stiffness": 8.0,
+                    "matrix_youngs_modulus": 8.0,
+                    "matrix_poisson_ratio": 0.3,
+                },
+            ),
+            DemoStep(
                 slug="mechanics",
                 workflow="mechanics",
                 title="Mechanics fitting from sample creep data",
@@ -212,6 +225,9 @@ def default_demo_steps(project_dir: Path, *, include_ai_workflows: bool = True) 
                     "design_top_k": 3,
                     "design_candidate_budget": 6,
                     "design_monte_carlo_runs": 2,
+                    "design_run_simulation": True,
+                    "design_simulation_scenario": "bulk_mechanics",
+                    "design_simulation_top_k": 1,
                 },
             ),
             DemoStep(
